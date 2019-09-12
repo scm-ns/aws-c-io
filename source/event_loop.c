@@ -17,6 +17,7 @@
 
 #include <aws/common/clock.h>
 #include <aws/common/system_info.h>
+#include <aws/common/thread.h>
 
 int aws_event_loop_group_init(
     struct aws_event_loop_group *el_group,
@@ -92,6 +93,56 @@ void aws_event_loop_group_clean_up(struct aws_event_loop_group *el_group) {
     }
 
     aws_array_list_clean_up(&el_group->event_loops);
+}
+
+struct aws_event_loop_group_destroy_async_data {
+    struct aws_event_loop_group *el_group;
+    aws_event_loop_group_cleanup_complete_fn *completion_callback;
+    void *user_data;
+};
+
+static void s_event_loop_destroy_async_thread_fn(void *thread_data) {
+    struct aws_event_loop_group_destroy_async_data *completion_data = thread_data;
+
+    aws_event_loop_group_clean_up(completion_data->el_group);
+
+    completion_data->completion_callback(completion_data->user_data);
+}
+
+void aws_event_loop_group_cleanup_async(
+    struct aws_event_loop_group *el_group,
+    aws_event_loop_group_cleanup_complete_fn completion_callback,
+    void *user_data) {
+    struct aws_thread cleanup_thread;
+    AWS_ZERO_STRUCT(cleanup_thread);
+
+    struct aws_event_loop_group_destroy_async_data *data =
+        aws_mem_calloc(el_group->allocator, 1, sizeof(struct aws_event_loop_group_destroy_async_data));
+    if (data == NULL) {
+        return;
+    }
+
+    data->el_group = el_group;
+    data->completion_callback = completion_callback;
+    data->user_data = user_data;
+
+    if (aws_thread_init(&cleanup_thread, el_group->allocator)) {
+        goto error;
+    }
+
+    struct aws_thread_options thread_options;
+    AWS_ZERO_STRUCT(thread_options);
+
+    if (aws_thread_launch(&cleanup_thread, s_event_loop_destroy_async_thread_fn, data, &thread_options)) {
+        goto error;
+    }
+
+    aws_thread_clean_up(&cleanup_thread);
+    return;
+
+error:
+
+    aws_mem_release(el_group->allocator, data);
 }
 
 size_t aws_event_loop_group_get_loop_count(struct aws_event_loop_group *el_group) {
