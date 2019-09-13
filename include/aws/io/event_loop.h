@@ -355,7 +355,7 @@ void aws_event_loop_group_clean_up(struct aws_event_loop_group *el_group);
  * Asynchronously invokes the cleanup() fn for the event loop group.
  * Spawns a background thread to run aws_event_loop_group_cleanup().
  * When the cleanup function completes, the completion callback is invoked with the supplied user data
- * Used in complex cases where the destroy call can happen on one of the event loop group's threads.
+ * Used in complex cases where the cleanup call can happen on one of the event loop group's threads.
  */
 AWS_IO_API
 void aws_event_loop_group_cleanup_async(
