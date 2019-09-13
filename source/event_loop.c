@@ -96,6 +96,7 @@ void aws_event_loop_group_clean_up(struct aws_event_loop_group *el_group) {
 }
 
 struct aws_event_loop_group_destroy_async_data {
+    struct aws_allocator *allocator;
     struct aws_event_loop_group *el_group;
     aws_event_loop_group_cleanup_complete_fn *completion_callback;
     void *user_data;
@@ -107,6 +108,8 @@ static void s_event_loop_destroy_async_thread_fn(void *thread_data) {
     aws_event_loop_group_clean_up(completion_data->el_group);
 
     completion_data->completion_callback(completion_data->user_data);
+
+    aws_mem_release(completion_data->allocator, thread_data);
 }
 
 void aws_event_loop_group_cleanup_async(
@@ -118,31 +121,23 @@ void aws_event_loop_group_cleanup_async(
 
     struct aws_event_loop_group_destroy_async_data *data =
         aws_mem_calloc(el_group->allocator, 1, sizeof(struct aws_event_loop_group_destroy_async_data));
-    if (data == NULL) {
-        return;
-    }
+    AWS_FATAL_ASSERT(data != NULL);
 
+    data->allocator = el_group->allocator;
     data->el_group = el_group;
     data->completion_callback = completion_callback;
     data->user_data = user_data;
 
-    if (aws_thread_init(&cleanup_thread, el_group->allocator)) {
-        goto error;
-    }
+    AWS_FATAL_ASSERT(aws_thread_init(&cleanup_thread, el_group->allocator) == AWS_OP_SUCCESS);
 
     struct aws_thread_options thread_options;
     AWS_ZERO_STRUCT(thread_options);
 
-    if (aws_thread_launch(&cleanup_thread, s_event_loop_destroy_async_thread_fn, data, &thread_options)) {
-        goto error;
-    }
+    AWS_FATAL_ASSERT(
+        aws_thread_launch(&cleanup_thread, s_event_loop_destroy_async_thread_fn, data, &thread_options) ==
+        AWS_OP_SUCCESS);
 
     aws_thread_clean_up(&cleanup_thread);
-    return;
-
-error:
-
-    aws_mem_release(el_group->allocator, data);
 }
 
 size_t aws_event_loop_group_get_loop_count(struct aws_event_loop_group *el_group) {
