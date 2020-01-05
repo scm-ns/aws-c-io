@@ -15,13 +15,17 @@
  * permissions and limitations under the License.
  */
 
-#include <aws/io/dns.h>
+#include <aws/io/io.h>
 
 #include <aws/common/atomics.h>
+#include <aws/common/mutex.h>
 #include <aws/io/channel.h>
 
+struct aws_string;
+struct aws_channel_bootstrap;
+
 struct aws_dns_resolver_impl_udp_options {
-    struct aws_channel_bootstrap *bootstrap;
+    struct aws_client_bootstrap *bootstrap;
     struct aws_byte_cursor host;
     uint16_t port;
 };
@@ -38,9 +42,10 @@ struct dns_resolver_udp_reconnect_task;
 
 struct aws_dns_resolver_impl_udp {
     /* immutable */
+    struct aws_allocator *allocator;
     struct aws_string *host;
     uint16_t port;
-    struct aws_channel_bootstrap *bootstrap;
+    struct aws_client_bootstrap *bootstrap;
 
     /* event-loop-only state */
     struct aws_channel_handler handler;
@@ -56,20 +61,27 @@ struct aws_dns_resolver_impl_udp {
     struct dns_resolver_udp_reconnect_task *reconnect_task;
 };
 
-typedef int (aws_dns_resolver_impl_make_query_callback_fn)(struct aws_byte_cursor address, int error_code, void *user_data);
+typedef int(
+    aws_dns_resolver_impl_make_query_callback_fn)(struct aws_byte_cursor address, int error_code, void *user_data);
 
-typedef void (aws_dns_resolver_impl_udp_on_destroyed_callback_fn)(void *user_data);
+typedef void(aws_dns_resolver_impl_udp_on_destroyed_callback_fn)(void *user_data);
 
 AWS_EXTERN_C_BEGIN
 
 AWS_IO_API
-struct aws_dns_resolver_impl_udp *aws_dns_resolver_impl_udp_new(struct aws_allocator *allocator, struct aws_dns_resolver_impl_udp_options *options);
+struct aws_dns_resolver_impl_udp *aws_dns_resolver_impl_udp_new(
+    struct aws_allocator *allocator,
+    struct aws_dns_resolver_impl_udp_options *options);
 
 AWS_IO_API
-void aws_dns_resolver_impl_udp_destroy_destroy(struct aws_dns_resolver_impl_udp *resolver);
+void aws_dns_resolver_impl_udp_destroy(struct aws_dns_resolver_impl_udp *resolver);
 
 AWS_IO_API
-int aws_dns_resolver_impl_udp_make_query(struct aws_dns_resolver_impl_udp *resolver, struct aws_byte_cursor host_name, aws_dns_resolver_impl_make_query_callback_fn *callback, void *user_data);
+int aws_dns_resolver_impl_udp_make_query(
+    struct aws_dns_resolver_impl_udp *resolver,
+    struct aws_byte_cursor host_name,
+    aws_dns_resolver_impl_make_query_callback_fn *callback,
+    void *user_data);
 
 AWS_EXTERN_C_END
 

@@ -13,17 +13,15 @@
  * permissions and limitations under the License.
  */
 
-#include <aws/io/dns_impl.h>
+#include <aws/io/private/dns_impl.h>
 
-struct aws_dns_resolver_impl_udp {
-    struct aws_string *host;
-    uint16_t port;
-
-    struct aws_channel_handler handler;
-    struct aws_channel_slot *slot;
-
-    struct aws_atomic_var ref_count;
-};
+#include <aws/common/clock.h>
+#include <aws/common/logging.h>
+#include <aws/common/string.h>
+#include <aws/io/channel_bootstrap.h>
+#include <aws/io/event_loop.h>
+#include <aws/io/logging.h>
+#include <aws/io/socket.h>
 
 static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver_impl_udp *resolver) {
     if (resolver == NULL) {
@@ -33,6 +31,45 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
     aws_string_destroy(resolver->host);
 
     aws_mem_release(resolver->allocator, resolver);
+}
+
+static int s_process_read_message(
+    struct aws_channel_handler *handler,
+    struct aws_channel_slot *slot,
+    struct aws_io_message *message) {
+
+    (void)handler;
+    (void)slot;
+    (void)message;
+
+    return AWS_OP_SUCCESS;
+}
+
+static int s_shutdown(
+    struct aws_channel_handler *handler,
+    struct aws_channel_slot *slot,
+    enum aws_channel_direction dir,
+    int error_code,
+    bool free_scarce_resources_immediately) {
+
+    (void)handler;
+
+    return aws_channel_slot_on_handler_shutdown_complete(slot, dir, error_code, free_scarce_resources_immediately);
+}
+
+static size_t s_initial_window_size(struct aws_channel_handler *handler) {
+    (void)handler;
+
+    return SIZE_MAX;
+}
+
+static void s_destroy(struct aws_channel_handler *handler) {
+    (void)handler;
+}
+
+static size_t s_message_overhead(struct aws_channel_handler *handler) {
+    (void)handler;
+    return 0;
 }
 
 static struct aws_channel_handler_vtable s_udp_vtable = {
@@ -48,19 +85,20 @@ static struct aws_channel_handler_vtable s_udp_vtable = {
 struct dns_resolver_udp_reconnect_task {
     struct aws_dns_resolver_impl_udp *resolver;
     struct aws_allocator *allocator;
-    struct aws_channel_task task;
+    struct aws_task task;
 };
 
-int s_connect(struct aws_dns_resolver_impl_udp *resolver);
+static int s_connect(struct aws_dns_resolver_impl_udp *resolver);
 
-static void s_dns_udp_reconnect_task(struct aws_channel_task *channel_task, void *arg, enum aws_task_status status) {
-    (void) status;
+static void s_dns_udp_reconnect_task(struct aws_task *task, void *arg, enum aws_task_status status) {
+    (void)status;
 
-    struct dns_resolver_udp_reconnect_task *task = AWS_CONTAINER_OF(channel_task, struct dns_resolver_udp_reconnect_task, task);
+    struct dns_resolver_udp_reconnect_task *reconnect_task =
+        AWS_CONTAINER_OF(task, struct dns_resolver_udp_reconnect_task, task);
     struct aws_dns_resolver_impl_udp *resolver = arg;
 
     if (resolver == NULL || status != AWS_TASK_STATUS_RUN_READY) {
-        aws_mem_release(task->allocator, task);
+        aws_mem_release(reconnect_task->allocator, task);
         return;
     }
 
@@ -70,24 +108,23 @@ static void s_dns_udp_reconnect_task(struct aws_channel_task *channel_task, void
         AWS_FATAL_ASSERT(resolver->state == AWS_DNS_RS_DISCONNECTING || resolver->state == AWS_DNS_RS_DISCONNECTED);
 
         resolver->reconnect_task = NULL;
-        aws_mem_release(task->allocator, task);
-        goto done;
-    }
-
-    if (s_connect(resolver)) {
-        struct aws_event_loop *el = aws_event_loop_group_get_next_loop(resolver->client->bootstrap->event_loop_group);
-
-        uint64_t reconnect_time_ns = aws_event_loop_current_clock_time(el) +
-                aws_timestamp_convert(2, AWS_TIMESTAMP_SECS, AWS_TIMESTAMP_NANOS);
-        aws_event_loop_schedule_task_future(el, &resolver->reconnect_task->task, reconnect_time_ns);
-        goto done;
+        aws_mem_release(reconnect_task->allocator, task);
+        aws_mutex_unlock(&resolver->lock);
+        return;
     }
 
     resolver->state = AWS_DNS_RS_CONNECTING;
 
-done:
-
     aws_mutex_unlock(&resolver->lock);
+
+    if (s_connect(resolver)) {
+        struct aws_event_loop *el = aws_event_loop_group_get_next_loop(resolver->bootstrap->event_loop_group);
+
+        uint64_t reconnect_time_ns = 0;
+        aws_event_loop_current_clock_time(el, &reconnect_time_ns);
+        reconnect_time_ns += aws_timestamp_convert(2, AWS_TIMESTAMP_SECS, AWS_TIMESTAMP_NANOS, NULL);
+        aws_event_loop_schedule_task_future(el, &resolver->reconnect_task->task, reconnect_time_ns);
+    }
 }
 
 static void s_aws_dns_resolver_impl_udp_shutdown(
@@ -104,7 +141,7 @@ static void s_aws_dns_resolver_impl_udp_shutdown(
     struct aws_dns_resolver_impl_udp *resolver = user_data;
 
     AWS_LOGF_TRACE(
-            AWS_LS_IO_DNS, "id=%p: UDP DNS Channel has been shutdown with error code %d", (void *)resolver, error_code);
+        AWS_LS_IO_DNS, "id=%p: UDP DNS Channel has been shutdown with error code %d", (void *)resolver, error_code);
 
     aws_mutex_lock(&resolver->lock);
 
@@ -131,25 +168,23 @@ static void s_aws_dns_resolver_impl_udp_shutdown(
         /* schedule the next attempt */
 
         if (resolver->state == AWS_DNS_RS_CONNECTING) {
-            AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: Udp DNS Connect failed, scheduling retry", (void *) resolver);
+            AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: Udp DNS Connect failed, scheduling retry", (void *)resolver);
         } else {
-            AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: Udp DNS Connection dropped, scheduling retry", (void *) resolver);
+            AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: Udp DNS Connection dropped, scheduling retry", (void *)resolver);
         }
 
-        struct aws_event_loop *el = aws_event_loop_group_get_next_loop(resolver->client->bootstrap->event_loop_group);
+        struct aws_event_loop *el = aws_event_loop_group_get_next_loop(resolver->bootstrap->event_loop_group);
         resolver->state = AWS_DNS_RS_RECONNECTING;
 
-        uint64_t reconnect_time_ns = aws_event_loop_current_clock_time(el) +
-                                     aws_timestamp_convert(2, AWS_TIMESTAMP_SECS, AWS_TIMESTAMP_NANOS);
+        uint64_t reconnect_time_ns = 0;
+        aws_event_loop_current_clock_time(el, &reconnect_time_ns);
+        reconnect_time_ns += aws_timestamp_convert(2, AWS_TIMESTAMP_SECS, AWS_TIMESTAMP_NANOS, NULL);
         aws_event_loop_schedule_task_future(el, &resolver->reconnect_task->task, reconnect_time_ns);
     } else if (resolver->state == AWS_DNS_RS_DISCONNECTING) {
 
         resolver->state = AWS_DNS_RS_DISCONNECTED;
 
-        AWS_LOGF_DEBUG(
-                AWS_LS_IO_DNS,
-                "id=%p: Udp DNS Disconnect completed",
-                (void *)resolver);
+        AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: Udp DNS Disconnect completed", (void *)resolver);
 
         finalize = true;
     }
@@ -191,27 +226,30 @@ static void s_aws_dns_resolver_impl_udp_init(
      *
      * AWS_DNS_RS_CONNECTED - similar to reconnecting, implies a double completion callback
      */
-    AWS_FATAL_ASSERT(resolver->state != AWS_DNS_RS_DISCONNECTED && resolver->state != AWS_DNS_RS_RECONNECTING && resolver->state != AWS_DNS_RS_CONNECTED);
+    AWS_FATAL_ASSERT(
+        resolver->state != AWS_DNS_RS_DISCONNECTED && resolver->state != AWS_DNS_RS_RECONNECTING &&
+        resolver->state != AWS_DNS_RS_CONNECTED);
 
     if (resolver->state == AWS_DNS_RS_DISCONNECTING) {
         AWS_LOGF_DEBUG(
-                AWS_LS_IO_DNS, "id=%p: DNS UDP connection successfully opened, but shut down has been requested", (void *) resolver);
+            AWS_LS_IO_DNS,
+            "id=%p: DNS UDP connection successfully opened, but shut down has been requested",
+            (void *)resolver);
         aws_channel_shutdown(channel, AWS_ERROR_SUCCESS);
         goto done;
     } else {
         AWS_FATAL_ASSERT(resolver->state == AWS_DNS_RS_CONNECTING);
 
-        AWS_LOGF_DEBUG(
-                AWS_LS_IO_DNS, "id=%p: DNS UDP connection successfully opened", (void *) resolver);
+        AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: DNS UDP connection successfully opened", (void *)resolver);
 
         /* Create the slot and handler */
         resolver->slot = aws_channel_slot_new(channel);
 
         if (!resolver->slot) {
             AWS_LOGF_ERROR(
-                    AWS_LS_IO_DNS,
-                    "id=%p: DNS UDP connection failed to create new slot, something has gone horribly wrong",
-                    (void *) connection);
+                AWS_LS_IO_DNS,
+                "id=%p: DNS UDP connection failed to create new slot, something has gone horribly wrong",
+                (void *)resolver);
             aws_channel_shutdown(channel, aws_last_error());
             goto done;
         }
@@ -236,21 +274,25 @@ static int s_connect(struct aws_dns_resolver_impl_udp *resolver) {
         .keep_alive_interval_sec = 0,
     };
 
-    return aws_client_bootstrap_new_socket_channel(resolver->bootstrap,
-                                                   (const char *)resolver->host->bytes,
-                                                   resolver->port,
-                                                   &socket_options,
-                                                   s_aws_dns_resolver_impl_udp_init,
-                                                   s_aws_dns_resolver_impl_udp_shutdown,
-                                                   resolver);
+    return aws_client_bootstrap_new_socket_channel(
+        resolver->bootstrap,
+        (const char *)resolver->host->bytes,
+        resolver->port,
+        &socket_options,
+        s_aws_dns_resolver_impl_udp_init,
+        s_aws_dns_resolver_impl_udp_shutdown,
+        resolver);
 }
 
-struct aws_dns_resolver_impl_udp *aws_dns_resolver_impl_udp_new(struct aws_allocator *allocator, struct aws_dns_resolver_impl_udp_options *options) {
+struct aws_dns_resolver_impl_udp *aws_dns_resolver_impl_udp_new(
+    struct aws_allocator *allocator,
+    struct aws_dns_resolver_impl_udp_options *options) {
     struct aws_dns_resolver_impl_udp *resolver = aws_mem_calloc(allocator, 1, sizeof(struct aws_dns_resolver_impl_udp));
     if (resolver == NULL) {
         return NULL;
     }
 
+    resolver->allocator = allocator;
     resolver->bootstrap = options->bootstrap;
 
     resolver->host = aws_string_new_from_array(allocator, options->host.ptr, options->host.len);
@@ -262,17 +304,17 @@ struct aws_dns_resolver_impl_udp *aws_dns_resolver_impl_udp_new(struct aws_alloc
         goto on_error;
     }
 
-    resolver->reconnect_task =
-            aws_mem_calloc(resolver->allocator, 1, sizeof(struct dns_resolver_udp_reconnect_task));
+    resolver->reconnect_task = aws_mem_calloc(resolver->allocator, 1, sizeof(struct dns_resolver_udp_reconnect_task));
     resolver->reconnect_task->resolver = resolver;
     resolver->reconnect_task->allocator = resolver->allocator;
-    aws_channel_task_init(&resolver->reconnect_task->task, s_dns_udp_reconnect_task, resolver, "dns_udp_reconnect");
+    aws_task_init(
+        &resolver->reconnect_task->task, s_dns_udp_reconnect_task, resolver->reconnect_task, "dns_udp_reconnect");
 
     resolver->state = AWS_DNS_RS_CONNECTING;
     resolver->port = options->port;
 
-    resolver->handler.allocator = allocator;
-    resolver->handler.vtable = s_udp_vtable;
+    resolver->handler.alloc = allocator;
+    resolver->handler.vtable = &s_udp_vtable;
     resolver->handler.impl = resolver;
 
     if (s_connect(resolver)) {
@@ -297,23 +339,24 @@ struct dns_resolver_udp_shutdown_task {
 static void s_dns_udp_disconnect_task(struct aws_channel_task *channel_task, void *arg, enum aws_task_status status) {
     (void)status;
 
-    struct dns_resolver_udp_shutdown_task *task = AWS_CONTAINER_OF(channel_task, struct dns_resolver_udp_shutdown_task, task);
+    struct dns_resolver_udp_shutdown_task *task =
+        AWS_CONTAINER_OF(channel_task, struct dns_resolver_udp_shutdown_task, task);
     struct aws_dns_resolver_impl_udp *resolver = arg;
 
-    AWS_LOGF_TRACE(AWS_LS_IO_DNS, "id=%p: Doing disconnect", (void *)connection);
+    AWS_LOGF_TRACE(AWS_LS_IO_DNS, "id=%p: Doing disconnect", (void *)resolver);
 
     aws_mutex_lock(&resolver->lock);
 
     /* If there is an outstanding reconnect task, cancel it */
-    if (resolver->state == AWS_DNS_RS_DISCONNECTING && connection->reconnect_task) {
-        connection->reconnect_task->resolver = NULL;
+    if (resolver->state == AWS_DNS_RS_DISCONNECTING && resolver->reconnect_task) {
+        resolver->reconnect_task->resolver = NULL;
 
         /* If the reconnect_task isn't scheduled, free it */
-        if (!connection->reconnect_task->task.timestamp) {
-            aws_mem_release(connection->reconnect_task->allocator, connection->reconnect_task);
+        if (!resolver->reconnect_task->task.timestamp) {
+            aws_mem_release(resolver->reconnect_task->allocator, resolver->reconnect_task);
         }
 
-        connection->reconnect_task = NULL;
+        resolver->reconnect_task = NULL;
     }
 
     if (resolver->slot && resolver->slot->channel) {
@@ -328,13 +371,14 @@ static void s_dns_udp_disconnect_task(struct aws_channel_task *channel_task, voi
 void aws_dns_resolver_impl_udp_destroy(struct aws_dns_resolver_impl_udp *resolver) {
     aws_mutex_lock(&resolver->lock);
 
-    if (resolver->state == AWS_DNS_RS_CONNECTING || resolver->state == AWS_DNS_RS_CONNECTED || resolver->state == AWS_DNS_RS_RECONNECTING) {
+    if (resolver->state == AWS_DNS_RS_CONNECTING || resolver->state == AWS_DNS_RS_CONNECTED ||
+        resolver->state == AWS_DNS_RS_RECONNECTING) {
         resolver->state = AWS_DNS_RS_DISCONNECTING;
 
         /* schedule a shutdown task */
         if (resolver->slot) {
             struct dns_resolver_udp_shutdown_task *shutdown_task =
-                aws_mem_calloc(connection->allocator, 1, sizeof(struct dns_resolver_udp_shutdown_task));
+                aws_mem_calloc(resolver->allocator, 1, sizeof(struct dns_resolver_udp_shutdown_task));
             shutdown_task->error_code = AWS_ERROR_SUCCESS;
             shutdown_task->resolver = resolver;
             aws_channel_task_init(&shutdown_task->task, s_dns_udp_disconnect_task, resolver, "dns_udp_disconnect");
@@ -345,7 +389,11 @@ void aws_dns_resolver_impl_udp_destroy(struct aws_dns_resolver_impl_udp *resolve
     aws_mutex_unlock(&resolver->lock);
 }
 
-int aws_dns_resolver_impl_udp_make_query(struct aws_dns_resolver_impl_udp *resolver, struct aws_byte_cursor host_name, aws_dns_resolver_impl_make_query_callback_fn *callback, void *user_data) {
+int aws_dns_resolver_impl_udp_make_query(
+    struct aws_dns_resolver_impl_udp *resolver,
+    struct aws_byte_cursor host_name,
+    aws_dns_resolver_impl_make_query_callback_fn *callback,
+    void *user_data) {
     (void)resolver;
     (void)host_name;
     (void)callback;

@@ -160,6 +160,8 @@ if (BUILD_SHARED_LIBS)
     add_test_case(shared_library_find_function_success)
 endif()
 
+add_test_case(dns_udp_resolver_create_destroy_test)
+
 set(TEST_BINARY_NAME ${CMAKE_PROJECT_NAME}-tests)
 generate_test_driver(${TEST_BINARY_NAME})
 
