@@ -81,6 +81,26 @@ static bool s_bootstrap_shutdown_predicate(void *user_data) {
     return shutdown;
 }
 
+static void s_on_resolver_destroyed(void *user_data) {
+    (void)user_data;
+
+    aws_mutex_lock(&s_test.lock);
+    s_test.resolver_shutdown = true;
+    aws_mutex_unlock(&s_test.lock);
+
+    aws_condition_variable_notify_one(&s_test.signal);
+}
+
+static void s_on_resolver_initial_connection(void *user_data) {
+    (void)user_data;
+
+    aws_mutex_lock(&s_test.lock);
+    s_test.connected = true;
+    aws_mutex_unlock(&s_test.lock);
+
+    aws_condition_variable_notify_one(&s_test.signal);
+}
+
 static int s_init_udp_test(struct aws_allocator *allocator) {
     AWS_ZERO_STRUCT(s_test);
 
@@ -111,6 +131,8 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
         .bootstrap = s_test.bootstrap,
         .host = aws_byte_cursor_from_c_str("127.0.0.53"),
         .port = 53,
+        .on_destroyed_callback = s_on_resolver_destroyed,
+        .on_initial_connection_callback = s_on_resolver_initial_connection,
     };
 
     s_test.resolver = aws_dns_resolver_impl_udp_new(allocator, &resolver_options);

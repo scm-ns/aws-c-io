@@ -24,10 +24,19 @@
 struct aws_string;
 struct aws_channel_bootstrap;
 
+typedef void(aws_dns_resolver_impl_udp_on_destroyed_callback_fn)(void *user_data);
+typedef void(aws_dns_resolver_impl_udp_on_initial_connection_callback_fn)(void *user_data);
+
 struct aws_dns_resolver_impl_udp_options {
     struct aws_client_bootstrap *bootstrap;
     struct aws_byte_cursor host;
     uint16_t port;
+
+    aws_dns_resolver_impl_udp_on_destroyed_callback_fn *on_destroyed_callback;
+    void *on_destroyed_user_data;
+
+    aws_dns_resolver_impl_udp_on_initial_connection_callback_fn *on_initial_connection_callback;
+    void *on_initial_connection_user_data;
 };
 
 enum aws_dns_resolver_state {
@@ -46,6 +55,10 @@ struct aws_dns_resolver_impl_udp {
     struct aws_string *host;
     uint16_t port;
     struct aws_client_bootstrap *bootstrap;
+    aws_dns_resolver_impl_udp_on_destroyed_callback_fn *on_destroyed_callback;
+    void *on_destroyed_user_data;
+    aws_dns_resolver_impl_udp_on_initial_connection_callback_fn *on_initial_connection_callback;
+    void *on_initial_connection_user_data;
 
     /* event-loop-only state */
     struct aws_channel_handler handler;
@@ -57,14 +70,13 @@ struct aws_dns_resolver_impl_udp {
     struct aws_mutex lock;
     enum aws_dns_resolver_state state;
     struct aws_channel_slot *slot;
+    bool initial_connection_callback_completed;
 
     struct dns_resolver_udp_reconnect_task *reconnect_task;
 };
 
 typedef int(
     aws_dns_resolver_impl_make_query_callback_fn)(struct aws_byte_cursor address, int error_code, void *user_data);
-
-typedef void(aws_dns_resolver_impl_udp_on_destroyed_callback_fn)(void *user_data);
 
 AWS_EXTERN_C_BEGIN
 

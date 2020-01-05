@@ -30,6 +30,10 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
 
     aws_string_destroy(resolver->host);
 
+    if (resolver->on_destroyed_callback) {
+        (resolver->on_destroyed_callback)(resolver->on_initial_connection_user_data);
+    }
+
     aws_mem_release(resolver->allocator, resolver);
 }
 
@@ -213,6 +217,8 @@ static void s_aws_dns_resolver_impl_udp_init(
         return;
     }
 
+    bool make_initial_connection_callback = false;
+
     aws_mutex_lock(&resolver->lock);
 
     /*
@@ -258,11 +264,20 @@ static void s_aws_dns_resolver_impl_udp_init(
         aws_channel_slot_set_handler(resolver->slot, &resolver->handler);
 
         resolver->state = AWS_DNS_RS_CONNECTED;
+
+        if (!resolver->initial_connection_callback_completed) {
+            resolver->initial_connection_callback_completed = true;
+            make_initial_connection_callback = true;
+        }
     }
 
 done:
 
     aws_mutex_unlock(&resolver->lock);
+
+    if (make_initial_connection_callback) {
+        (resolver->on_initial_connection_callback)(resolver->on_initial_connection_user_data);
+    }
 }
 
 static int s_connect(struct aws_dns_resolver_impl_udp *resolver) {
@@ -294,6 +309,11 @@ struct aws_dns_resolver_impl_udp *aws_dns_resolver_impl_udp_new(
 
     resolver->allocator = allocator;
     resolver->bootstrap = options->bootstrap;
+    resolver->on_destroyed_callback = options->on_destroyed_callback;
+    resolver->on_destroyed_user_data = options->on_destroyed_user_data;
+    resolver->on_initial_connection_callback = options->on_initial_connection_callback;
+    resolver->on_initial_connection_user_data = options->on_initial_connection_user_data;
+    resolver->initial_connection_callback_completed = false;
 
     resolver->host = aws_string_new_from_array(allocator, options->host.ptr, options->host.len);
     if (resolver->host == NULL) {
