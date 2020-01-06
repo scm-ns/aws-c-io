@@ -51,34 +51,19 @@ static void s_client_bootstrap_shutdown_complete_fn(void *user_data) {
 static bool s_resolver_connected_predicate(void *user_data) {
     (void)user_data;
 
-    bool connected = false;
-    aws_mutex_lock(&s_test.lock);
-    connected = s_test.connected;
-    aws_mutex_unlock(&s_test.lock);
-
-    return connected;
+    return s_test.connected;
 }
 
 static bool s_resolver_shutdown_predicate(void *user_data) {
     (void)user_data;
 
-    bool shutdown = false;
-    aws_mutex_lock(&s_test.lock);
-    shutdown = s_test.resolver_shutdown;
-    aws_mutex_unlock(&s_test.lock);
-
-    return shutdown;
+    return s_test.resolver_shutdown;
 }
 
 static bool s_bootstrap_shutdown_predicate(void *user_data) {
     (void)user_data;
 
-    bool shutdown = false;
-    aws_mutex_lock(&s_test.lock);
-    shutdown = s_test.bootstrap_shutdown;
-    aws_mutex_unlock(&s_test.lock);
-
-    return shutdown;
+    return s_test.bootstrap_shutdown;
 }
 
 static void s_on_resolver_destroyed(void *user_data) {
@@ -116,6 +101,9 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
     ASSERT_SUCCESS(aws_logger_init_standard(&s_test.logger, s_test.allocator, &logger_options));
     aws_logger_set(&s_test.logger);
 
+    aws_mutex_init(&s_test.lock);
+    aws_condition_variable_init(&s_test.signal);
+
     aws_event_loop_group_default_init(&s_test.elg, allocator, 1);
     aws_host_resolver_init_default(&s_test.old_resolver, allocator, 16, &s_test.elg);
 
@@ -138,6 +126,7 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
     s_test.resolver = aws_dns_resolver_impl_udp_new(allocator, &resolver_options);
 
     aws_condition_variable_wait_pred(&s_test.signal, &s_test.lock, s_resolver_connected_predicate, NULL);
+    aws_mutex_unlock(&s_test.lock);
 
     return AWS_OP_SUCCESS;
 }
@@ -145,13 +134,20 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
 static void s_shutdown_udp_test(void) {
 
     aws_dns_resolver_impl_udp_destroy(s_test.resolver);
+
     aws_condition_variable_wait_pred(&s_test.signal, &s_test.lock, s_resolver_shutdown_predicate, NULL);
+    aws_mutex_unlock(&s_test.lock);
 
     aws_client_bootstrap_release(s_test.bootstrap);
+
     aws_condition_variable_wait_pred(&s_test.signal, &s_test.lock, s_bootstrap_shutdown_predicate, NULL);
+    aws_mutex_unlock(&s_test.lock);
 
     aws_host_resolver_clean_up(&s_test.old_resolver);
     aws_event_loop_group_clean_up(&s_test.elg);
+
+    aws_condition_variable_clean_up(&s_test.signal);
+    aws_mutex_clean_up(&s_test.lock);
 
     aws_io_library_clean_up();
 

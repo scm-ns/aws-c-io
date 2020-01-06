@@ -275,7 +275,7 @@ done:
 
     aws_mutex_unlock(&resolver->lock);
 
-    if (make_initial_connection_callback) {
+    if (make_initial_connection_callback && resolver->on_initial_connection_callback != NULL) {
         (resolver->on_initial_connection_callback)(resolver->on_initial_connection_user_data);
     }
 }
