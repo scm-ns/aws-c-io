@@ -118,13 +118,9 @@ typedef void(aws_dns_on_destroy_completed_fn)(void *user_data);
  *  (4) Cache bypass - Add one or more root name servers to the root category.  They will be used as the start points
  *  for resolving iterative queries (when the label cache does not have better starting information).
  *
- * Not yet solved (unsure if necessary):
+ * Open questions (unsure if necessary):
  *
- *  (1) Do we need additional information on the provider record to support the
- *  (unlikely) case of getting a truncated result and being unable to get around it via edns(0) options?  In
- *  particular, would a fallback port for a tcp connection be useful and sufficient?
- *
- *  (2) Do we need to publicly expose the logic that works with resolv.conf/host.conf/nsswitch.conf?
+ *  (1) Do we need to publicly expose the logic that works with resolv.conf/host.conf/nsswitch.conf?
  */
 
 enum aws_dns_protocol {

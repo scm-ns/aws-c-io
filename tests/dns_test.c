@@ -28,7 +28,7 @@ struct aws_dns_resolver_udp_test {
     struct aws_event_loop_group elg;
     struct aws_host_resolver old_resolver;
     struct aws_client_bootstrap *bootstrap;
-    struct aws_dns_resolver_impl_udp *resolver;
+    struct aws_dns_resolver_udp_channel *resolver;
 
     struct aws_mutex lock;
     struct aws_condition_variable signal;
@@ -115,7 +115,7 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
 
     s_test.bootstrap = aws_client_bootstrap_new(allocator, &bootstrap_options);
 
-    struct aws_dns_resolver_impl_udp_options resolver_options = {
+    struct aws_dns_resolver_udp_channel_options resolver_options = {
         .bootstrap = s_test.bootstrap,
         .host = aws_byte_cursor_from_c_str("127.0.0.53"),
         .port = 53,
@@ -123,7 +123,7 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
         .on_initial_connection_callback = s_on_resolver_initial_connection,
     };
 
-    s_test.resolver = aws_dns_resolver_impl_udp_new(allocator, &resolver_options);
+    s_test.resolver = aws_dns_resolver_udp_channel_new(allocator, &resolver_options);
 
     aws_condition_variable_wait_pred(&s_test.signal, &s_test.lock, s_resolver_connected_predicate, NULL);
     aws_mutex_unlock(&s_test.lock);
@@ -133,7 +133,7 @@ static int s_init_udp_test(struct aws_allocator *allocator) {
 
 static void s_shutdown_udp_test(void) {
 
-    aws_dns_resolver_impl_udp_destroy(s_test.resolver);
+    aws_dns_resolver_udp_channel_destroy(s_test.resolver);
 
     aws_condition_variable_wait_pred(&s_test.signal, &s_test.lock, s_resolver_shutdown_predicate, NULL);
     aws_mutex_unlock(&s_test.lock);
