@@ -13,6 +13,7 @@
  * permissions and limitations under the License.
  */
 
+#include <aws/common/atomics.h>
 #include <aws/common/clock.h>
 #include <aws/common/condition_variable.h>
 #include <aws/common/system_info.h>
@@ -25,13 +26,13 @@
 struct task_args {
     bool invoked;
     bool was_in_thread;
-    uint64_t thread_id;
+    aws_thread_id_t thread_id;
     struct aws_event_loop *loop;
     struct aws_event_loop_group *el_group;
     enum aws_task_status status;
     struct aws_mutex mutex;
     struct aws_condition_variable condition_variable;
-    bool thread_complete;
+    struct aws_atomic_var thread_complete;
 };
 
 static void s_test_task(struct aws_task *task, void *user_data, enum aws_task_status status) {
@@ -85,7 +86,7 @@ static int s_test_event_loop_xthread_scheduled_tasks_execute(struct aws_allocato
     ASSERT_TRUE(task_args.invoked);
     aws_mutex_unlock(&task_args.mutex);
 
-    ASSERT_FALSE(task_args.thread_id == aws_thread_current_thread_id());
+    ASSERT_FALSE(aws_thread_thread_id_equal(task_args.thread_id, aws_thread_current_thread_id()));
 
     /* Test "now" tasks */
     task_args.invoked = false;
@@ -152,13 +153,13 @@ static int s_test_event_loop_canceled_tasks_run_in_el_thread(struct aws_allocato
         &task1_args.condition_variable, &task1_args.mutex, s_task_ran_predicate, &task1_args));
     ASSERT_TRUE(task1_args.invoked);
     ASSERT_TRUE(task1_args.was_in_thread);
-    ASSERT_FALSE(task1_args.thread_id == aws_thread_current_thread_id());
+    ASSERT_FALSE(aws_thread_thread_id_equal(task1_args.thread_id, aws_thread_current_thread_id()));
     ASSERT_INT_EQUALS(AWS_TASK_STATUS_RUN_READY, task1_args.status);
     aws_mutex_unlock(&task1_args.mutex);
 
     aws_event_loop_destroy(event_loop);
 
-    aws_mutex_lock(&task1_args.mutex);
+    aws_mutex_lock(&task2_args.mutex);
 
     ASSERT_SUCCESS(aws_condition_variable_wait_pred(
         &task2_args.condition_variable, &task2_args.mutex, s_test_cancel_thread_task_predicate, &task2_args));
@@ -166,7 +167,7 @@ static int s_test_event_loop_canceled_tasks_run_in_el_thread(struct aws_allocato
     aws_mutex_unlock(&task2_args.mutex);
 
     ASSERT_TRUE(task2_args.was_in_thread);
-    ASSERT_TRUE(task2_args.thread_id == aws_thread_current_thread_id());
+    ASSERT_TRUE(aws_thread_thread_id_equal(task2_args.thread_id, aws_thread_current_thread_id()));
     ASSERT_INT_EQUALS(AWS_TASK_STATUS_CANCELED, task2_args.status);
 
     return AWS_OP_SUCCESS;
@@ -1070,7 +1071,7 @@ AWS_TEST_CASE(event_loop_group_setup_and_shutdown, test_event_loop_group_setup_a
 /* mark the thread complete when the async shutdown thread is done */
 static void s_async_shutdown_thread_exit(void *user_data) {
     struct task_args *args = user_data;
-    args->thread_complete = true;
+    aws_atomic_store_int(&args->thread_complete, true);
 }
 
 static void s_async_shutdown_complete_callback(void *user_data) {
@@ -1117,18 +1118,17 @@ static int test_event_loop_group_setup_and_shutdown_async(struct aws_allocator *
     aws_task_init(&task, s_async_shutdown_task, &task_args, "async elg shutdown invoked from an event loop thread");
 
     /* Test "future" tasks */
-    ASSERT_SUCCESS(aws_mutex_lock(&task_args.mutex));
-
     uint64_t now;
     ASSERT_SUCCESS(aws_event_loop_current_clock_time(event_loop, &now));
     aws_event_loop_schedule_task_future(event_loop, &task, now);
 
+    ASSERT_SUCCESS(aws_mutex_lock(&task_args.mutex));
     ASSERT_SUCCESS(aws_condition_variable_wait_pred(
         &task_args.condition_variable, &task_args.mutex, s_task_ran_predicate, &task_args));
     ASSERT_TRUE(task_args.invoked);
     aws_mutex_unlock(&task_args.mutex);
 
-    while (!task_args.thread_complete) {
+    while (!aws_atomic_load_int(&task_args.thread_complete)) {
         aws_thread_current_sleep(15);
     }
 

@@ -98,7 +98,7 @@ static void s_dns_udp_reconnect_task(struct aws_task *task, void *arg, enum aws_
     (void)status;
 
     struct dns_resolver_udp_channel_reconnect_task *reconnect_task =
-        AWS_CONTAINER_OF(task, struct dns_resolver_udp_reconnect_task, task);
+        AWS_CONTAINER_OF(task, struct dns_resolver_udp_channel_reconnect_task, task);
     struct aws_dns_resolver_udp_channel *resolver = arg;
 
     if (resolver == NULL || status != AWS_TASK_STATUS_RUN_READY) {
@@ -292,14 +292,17 @@ static int s_connect(struct aws_dns_resolver_udp_channel *resolver) {
         .keep_alive_interval_sec = 0,
     };
 
-    return aws_client_bootstrap_new_socket_channel(
-        resolver->bootstrap,
-        (const char *)resolver->host->bytes,
-        resolver->port,
-        &socket_options,
-        s_aws_dns_resolver_impl_udp_init,
-        s_aws_dns_resolver_impl_udp_shutdown,
-        resolver);
+    struct aws_socket_channel_bootstrap_options channel_options = {
+        .bootstrap  = resolver->bootstrap,
+        .host_name = (const char *)resolver->host->bytes,
+        .port = resolver->port,
+        .socket_options = &socket_options,
+        .setup_callback = s_aws_dns_resolver_impl_udp_init,
+        .shutdown_callback = s_aws_dns_resolver_impl_udp_shutdown,
+        .user_data = resolver,
+    };
+
+    return aws_client_bootstrap_new_socket_channel(&channel_options);
 }
 
 struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(

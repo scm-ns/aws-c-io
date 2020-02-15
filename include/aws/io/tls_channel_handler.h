@@ -15,12 +15,12 @@
  * permissions and limitations under the License.
  */
 #include <aws/common/byte_buf.h>
-#include <aws/common/string.h>
 
 #include <aws/io/io.h>
 
 struct aws_channel_slot;
 struct aws_channel_handler;
+struct aws_string;
 
 enum aws_tls_versions {
     AWS_IO_SSLv3,
@@ -93,6 +93,7 @@ struct aws_tls_connection_options {
     void *user_data;
     struct aws_tls_ctx *ctx;
     bool advertise_alpn_message;
+    uint32_t timeout_ms;
 };
 
 struct aws_tls_ctx_options {
@@ -188,6 +189,16 @@ static const int AWS_TLS_NEGOTIATED_PROTOCOL_MESSAGE = 0x01;
 
 typedef struct aws_channel_handler *(
     *aws_tls_on_protocol_negotiated)(struct aws_channel_slot *new_slot, struct aws_byte_buf *protocol, void *user_data);
+
+/**
+ * An enum for the current state of tls negotiation within a tls channel handler
+ */
+enum aws_tls_negotiation_status {
+    AWS_TLS_NEGOTIATION_STATUS_NONE,
+    AWS_TLS_NEGOTIATION_STATUS_ONGOING,
+    AWS_TLS_NEGOTIATION_STATUS_SUCCESS,
+    AWS_TLS_NEGOTIATION_STATUS_FAILURE
+};
 
 AWS_EXTERN_C_BEGIN
 

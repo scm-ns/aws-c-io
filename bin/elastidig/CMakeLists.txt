@@ -15,7 +15,7 @@ target_include_directories(${ELASTIDIG_PROJECT_NAME} PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
 
-target_link_libraries(${ELASTIDIG_PROJECT_NAME} aws-c-io)
+target_link_libraries(${ELASTIDIG_PROJECT_NAME} aws-c-io ${PLATFORM_LIBS})
 
 if (BUILD_SHARED_LIBS AND NOT WIN32)
     message(INFO " elastidig will be built with shared libs, but you may need to set LD_LIBRARY_PATH=${CMAKE_INSTALL_PREFIX}/lib to run the application")
