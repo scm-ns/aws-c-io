@@ -155,6 +155,12 @@ static struct aws_error_info s_errors[] = {
     AWS_DEFINE_ERROR_INFO_IO(
         AWS_IO_TLS_NEGOTIATION_TIMEOUT,
         "Channel shutdown due to tls negotiation timeout"),
+    AWS_DEFINE_ERROR_INFO_IO(
+        AWS_IO_DNS_QUERY_INTERRUPTED,
+        "Query failed due to cancellation or channel shutdown"),
+    AWS_DEFINE_ERROR_INFO_IO(
+        AWS_IO_DNS_QUERY_TIMEOUT,
+        "Query failed due to timeout"),
 };
 /* clang-format on */
 

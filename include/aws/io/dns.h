@@ -169,6 +169,8 @@ struct aws_dns_query_options {
      * If zero, defaults to 4000.
      */
     uint16_t retry_interval_in_millis;
+
+    uint32_t timeout_millis;
 };
 
 struct aws_dns_query_result {

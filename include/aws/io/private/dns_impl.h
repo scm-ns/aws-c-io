@@ -25,6 +25,48 @@
 struct aws_string;
 struct aws_channel_bootstrap;
 
+enum aws_dns_query_state {
+    AWS_DNS_QS_INITIALIZED,
+    AWS_DNS_QS_PENDING_REQUEST,
+    AWS_DNS_QS_PENDING_RESPONSE,
+};
+
+struct aws_dns_query_internal {
+    struct aws_linked_list_node node;
+
+    struct aws_allocator *allocator;
+
+    struct aws_dns_resolver_udp_channel *channel;
+
+    enum aws_dns_query_state state;
+    uint16_t transaction_id;
+    uint64_t start_timestamp;
+
+    struct aws_channel_task timeout_task;
+
+    /* persistent query properties */
+    struct aws_string *name;
+    enum aws_dns_resource_record_type query_type;
+
+    struct aws_dns_query_options options;
+
+    on_dns_query_completed_callback_fn *on_completed_callback;
+    void *user_data;
+};
+
+AWS_EXTERN_C_BEGIN
+
+AWS_IO_API
+struct aws_dns_query_internal *aws_dns_query_internal_new(
+    struct aws_allocator *allocator,
+    struct aws_dns_query *query,
+    struct aws_dns_resolver_udp_channel *channel);
+
+AWS_IO_API
+void aws_dns_query_internal_destroy(struct aws_dns_query_internal *query);
+
+AWS_EXTERN_C_END
+
 typedef void(aws_dns_resolver_udp_channel_on_destroyed_callback_fn)(void *user_data);
 typedef void(aws_dns_resolver_udp_channel_on_initial_connection_callback_fn)(void *user_data);
 
@@ -64,8 +106,9 @@ struct aws_dns_resolver_udp_channel {
     /* event-loop-only state */
     struct aws_channel_handler handler;
 
-    /* shared state */
-    struct aws_atomic_var ref_count;
+    uint16_t next_transaction_id;
+    struct aws_linked_list outstanding_queries;
+    struct aws_linked_list pending_queries;
 
     /* shared, protected state */
     struct aws_mutex lock;
@@ -74,6 +117,11 @@ struct aws_dns_resolver_udp_channel {
     bool initial_connection_callback_completed;
 
     struct dns_resolver_udp_channel_reconnect_task *reconnect_task;
+
+    struct aws_linked_list out_of_thread_queries;
+
+    struct aws_channel_task channel_driver_task;
+    bool is_channel_driver_scheduled;
 };
 
 AWS_EXTERN_C_BEGIN
