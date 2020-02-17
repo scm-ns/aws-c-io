@@ -293,7 +293,7 @@ static int s_connect(struct aws_dns_resolver_udp_channel *resolver) {
     };
 
     struct aws_socket_channel_bootstrap_options channel_options = {
-        .bootstrap  = resolver->bootstrap,
+        .bootstrap = resolver->bootstrap,
         .host_name = (const char *)resolver->host->bytes,
         .port = resolver->port,
         .socket_options = &socket_options,
@@ -419,13 +419,9 @@ void aws_dns_resolver_udp_channel_destroy(struct aws_dns_resolver_udp_channel *r
 
 int aws_dns_resolver_udp_channel_make_query(
     struct aws_dns_resolver_udp_channel *resolver,
-    struct aws_byte_cursor host_name,
-    aws_dns_resolver_channel_make_query_callback_fn *callback,
-    void *user_data) {
+    struct aws_dns_query *query) {
     (void)resolver;
-    (void)host_name;
-    (void)callback;
-    (void)user_data;
+    (void)query;
 
-    return AWS_OP_SUCCESS;
+    return AWS_OP_ERR;
 }

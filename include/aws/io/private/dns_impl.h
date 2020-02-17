@@ -76,9 +76,6 @@ struct aws_dns_resolver_udp_channel {
     struct dns_resolver_udp_channel_reconnect_task *reconnect_task;
 };
 
-typedef int(
-    aws_dns_resolver_channel_make_query_callback_fn)(struct aws_byte_cursor address, int error_code, void *user_data);
-
 AWS_EXTERN_C_BEGIN
 
 AWS_IO_API
@@ -90,11 +87,7 @@ AWS_IO_API
 void aws_dns_resolver_udp_channel_destroy(struct aws_dns_resolver_udp_channel *resolver);
 
 AWS_IO_API
-int aws_dns_resolver_udp_channel_make_query(
-    struct aws_dns_resolver_udp_channel *resolver,
-    struct aws_byte_cursor host_name,
-    aws_dns_resolver_channel_make_query_callback_fn *callback,
-    void *user_data);
+int aws_dns_resolver_udp_channel_make_query(struct aws_dns_resolver_udp_channel *resolver, struct aws_dns_query *query);
 
 AWS_EXTERN_C_END
 
