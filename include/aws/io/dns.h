@@ -17,9 +17,9 @@
 
 #include <aws/io/io.h>
 
+#include <aws/common/array_list.h>
 #include <aws/common/atomics.h>
 
-struct aws_array_list;
 struct aws_event_loop_group;
 struct aws_string;
 struct aws_dns_resolver;
@@ -118,6 +118,8 @@ enum aws_dns_resource_record_type {
 };
 
 struct aws_dns_resource_record {
+    struct aws_byte_buf name;
+
     /* Needs to be on the record (rather than the full result/set) to support ANY-based queries */
     enum aws_dns_resource_record_type type;
 
@@ -125,7 +127,7 @@ struct aws_dns_resource_record {
     uint32_t ttl;
 
     /* raw binary data of the resource record */
-    struct aws_string *data;
+    struct aws_byte_buf data;
 };
 
 /* what kind of query to make */
@@ -174,7 +176,10 @@ struct aws_dns_query_options {
 };
 
 struct aws_dns_query_result {
+    uint16_t transaction_id;
+
     /* arrays of aws_dns_resource_record */
+    struct aws_array_list question_records;
     struct aws_array_list answer_records;
     struct aws_array_list authority_records;
     struct aws_array_list additional_records;
@@ -232,6 +237,12 @@ AWS_IO_API void aws_dns_resolver_release(struct aws_dns_resolver *resolver);
 
 AWS_IO_API
 int aws_dns_resolver_make_query(struct aws_dns_resolver *resolver, struct aws_dns_query *query);
+
+AWS_IO_API
+void aws_dns_query_result_clean_up(struct aws_dns_query_result *result);
+
+AWS_IO_API
+void aws_dns_resource_record_clean_up(struct aws_dns_resource_record *record);
 
 AWS_EXTERN_C_END
 

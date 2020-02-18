@@ -169,6 +169,7 @@ endif()
 add_test_case(dns_udp_resolver_create_destroy_test)
 add_test_case(dns_udp_resolver_timeout_test)
 add_test_case(dns_udp_resolver_interrupt_test)
+add_test_case(dns_udp_resolver_success_test)
 
 set(TEST_BINARY_NAME ${PROJECT_NAME}-tests)
 

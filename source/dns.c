@@ -13,6 +13,7 @@
  * permissions and limitations under the License.
  */
 
+#include <aws/io/private/dns_decoder.h>
 #include <aws/io/private/dns_impl.h>
 
 #include <aws/common/clock.h>
@@ -102,16 +103,71 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
     aws_mem_release(resolver->allocator, resolver);
 }
 
+static struct aws_dns_query_internal *s_find_matching_query(struct aws_dns_resolver_udp_channel *resolver, struct aws_dns_query_result *response) {
+    if (aws_array_list_length(&response->question_records) != 1) {
+        return NULL;
+    }
+
+    struct aws_dns_resource_record *question = NULL;
+    aws_array_list_get_at_ptr(&response->question_records, (void **)&question, 0);
+
+    struct aws_linked_list_node *node = aws_linked_list_begin(&resolver->outstanding_queries);
+    while (node != aws_linked_list_end(&resolver->outstanding_queries)) {
+        struct aws_dns_query_internal *query = AWS_CONTAINER_OF(node, struct aws_dns_query_internal, node);
+        node = aws_linked_list_next(node);
+
+        if (response->transaction_id != query->transaction_id) {
+            continue;
+        }
+
+        struct aws_byte_cursor question_name_cursor = aws_byte_cursor_from_buf(&question->name);
+        struct aws_byte_cursor query_name_cursor = aws_byte_cursor_from_string(query->name);
+        if (!aws_byte_cursor_eq_ignore_case(&question_name_cursor, &query_name_cursor)) {
+            continue;
+        }
+
+        return query;
+    }
+
+    return NULL;
+}
+
 static int s_process_read_message(
     struct aws_channel_handler *handler,
     struct aws_channel_slot *slot,
     struct aws_io_message *message) {
 
-    (void)handler;
     (void)slot;
-    (void)message;
 
-    return AWS_OP_SUCCESS;
+    AWS_LOGF_TRACE(AWS_LS_IO_DNS, "Received datagram of length %d on DNS channel", (int)message->message_data.len);
+
+    struct aws_dns_resolver_udp_channel *resolver = handler->impl;
+    int result = AWS_OP_ERR;
+    struct aws_dns_query_result response;
+    AWS_ZERO_STRUCT(response);
+
+    if (aws_dns_decode_response(&response, resolver->allocator, aws_byte_cursor_from_buf(&message->message_data))) {
+        goto done;
+    }
+
+    struct aws_dns_query_internal *source_query = s_find_matching_query(resolver, &response);
+    if (source_query != NULL) {
+        AWS_LOGF_INFO(AWS_LS_IO_DNS, "Received response with transaction id %d, invoking query callback", (int)response.transaction_id);
+        source_query->on_completed_callback(&response, AWS_ERROR_SUCCESS, source_query->user_data);
+        source_query->state = AWS_DNS_QS_COMPLETE;
+        s_unlink_query(source_query);
+        aws_dns_query_internal_destroy(source_query);
+    } else {
+        AWS_LOGF_INFO(AWS_LS_IO_DNS, "Received response with transaction id %d but no matching query could be found", (int)response.transaction_id);
+    }
+
+done:
+
+    aws_dns_query_result_clean_up(&response);
+
+    aws_mem_release(message->allocator, message);
+
+    return result;
 }
 
 static int s_shutdown(
@@ -398,8 +454,188 @@ static int s_connect(struct aws_dns_resolver_udp_channel *resolver) {
     return aws_client_bootstrap_new_socket_channel(&channel_options);
 }
 
-static void s_send_query(struct aws_dns_query_internal *query) {
+static int s_encode_dns_fixed_header(struct aws_dns_query_internal *query, struct aws_byte_buf *data) {
+    /*
+     * Should cryptographically unpredictable, but for now, just a counter
+     */
+    uint16_t transaction_id = query->channel->next_transaction_id++;
+    if (!aws_byte_buf_write_be16(data, transaction_id)) {
+        return AWS_OP_ERR;
+    }
+
+    /* all flags 0 except recursion desired */
+    uint16_t flags = (1U << 8 );
+    if (!aws_byte_buf_write_be16(data, flags)) {
+        return AWS_OP_ERR;
+    }
+
+    /* 1 question */
+    if (!aws_byte_buf_write_be16(data, 1)) {
+        return AWS_OP_ERR;
+    }
+
+    /* 0 answers */
+    if (!aws_byte_buf_write_be16(data, 0)) {
+        return AWS_OP_ERR;
+    }
+
+    /* 0 authority records */
+    if (!aws_byte_buf_write_be16(data, 0)) {
+        return AWS_OP_ERR;
+    }
+
+    /* 1 additional record (EDNS0 packet length control) */
+    if (!aws_byte_buf_write_be16(data, 1)) {
+        return AWS_OP_ERR;
+    }
+
+    return AWS_OP_SUCCESS;
+}
+
+static int s_encode_name(struct aws_byte_buf *data, struct aws_byte_cursor name_cursor) {
+
+    struct aws_byte_cursor label_cursor;
+    AWS_ZERO_STRUCT(label_cursor);
+
+    while (aws_byte_cursor_next_split(&name_cursor, '.', &label_cursor)) {
+        if (label_cursor.len >= 64) {
+            /* this needs to be fatal to the query */
+            return AWS_OP_ERR;
+        }
+
+        uint8_t label_length = (uint8_t)label_cursor.len;
+        if (!aws_byte_buf_write_u8(data, label_length)) {
+            return AWS_OP_ERR;
+        }
+
+        if (aws_byte_buf_append(data, &label_cursor)) {
+            return AWS_OP_ERR;
+        }
+
+        aws_byte_cursor_advance(&name_cursor, label_cursor.len + 1);
+    }
+
+    /* zero length terminator */
+    if (!aws_byte_buf_write_u8(data, 0)) {
+        return AWS_OP_ERR;
+    }
+
+    return AWS_OP_SUCCESS;
+}
+
+static int s_encode_dns_question(struct aws_dns_query_internal *query, struct aws_byte_buf *data) {
+
+    if (s_encode_name(data, aws_byte_cursor_from_string(query->name))) {
+        return AWS_OP_ERR;
+    }
+
+    /* query type = query type enum value */
+    if (!aws_byte_buf_write_be16(data, (uint16_t)query->query_type)) {
+        return AWS_OP_ERR;
+    }
+
+    /* query class = Internet */
+    if (!aws_byte_buf_write_be16(data, 1)) {
+        return AWS_OP_ERR;
+    }
+
+    return AWS_OP_SUCCESS;
+}
+
+static int s_encode_dns_extensions(struct aws_dns_query_internal *query, struct aws_byte_buf *data) {
     (void)query;
+
+    /* NAME component, in this case just a terminator byte */
+    if (!aws_byte_buf_write_u8(data, 0)) {
+        return AWS_OP_ERR;
+    }
+
+    /* Type, in this case 41 for the Opt RR */
+    if (!aws_byte_buf_write_be16(data, 41)) {
+        return AWS_OP_ERR;
+    }
+
+    /* Requested payload size, 4096 for now, possibly adaptive later */
+    if (!aws_byte_buf_write_be16(data, 4096)) {
+        return AWS_OP_ERR;
+    }
+
+    /* TTL (extended RCODE and flags) (all 0) */
+    if (!aws_byte_buf_write_be32(data, 0)) {
+        return AWS_OP_ERR;
+    }
+
+    /* RDATA length (0) */
+    if (!aws_byte_buf_write_be16(data, 0)) {
+        return AWS_OP_ERR;
+    }
+
+    return AWS_OP_SUCCESS;
+}
+
+static int s_encode_query(struct aws_dns_query_internal *query, struct aws_byte_buf *data) {
+    if (s_encode_dns_fixed_header(query, data)) {
+        return AWS_OP_ERR;
+    }
+
+    if (s_encode_dns_question(query, data)) {
+        return AWS_OP_ERR;
+    }
+
+    if (s_encode_dns_extensions(query, data)) {
+        return AWS_OP_ERR;
+    }
+
+    return AWS_OP_SUCCESS;
+}
+
+static void s_send_query(struct aws_dns_query_internal *query) {
+
+    /*
+     *  (1) - NAME  (0)
+     *  (2) - Type (41)
+     *  (2) - Payload size (4096)
+     *  (4) - TTL (extended RCODE and flags) (all 0)
+     *  (2) - RDATA length (0 for us)
+     *  (?) - RDATA (0)
+     *
+     *  So 1 + 2 + 2 + 4 + 2 = 11
+     */
+    const size_t extension_length = 11;
+
+    /*
+     * name length where '.' is replaced by length bytes
+     * + 1 for final label's length
+     * + 1 for terminal zero byte
+     * + 4 for query type (2 bytes) and query class (2 bytes)
+     */
+    const size_t question_length = query->name->len + 2 + 4;
+
+    const size_t fixed_header_length = 12;
+
+    const size_t required_length = fixed_header_length + question_length + extension_length;
+
+    struct aws_io_message *message = aws_channel_acquire_message_from_pool(
+            query->channel->slot->channel, AWS_IO_MESSAGE_APPLICATION_DATA, required_length);
+    if (message == NULL) {
+        return;
+    }
+
+    if (s_encode_query(query, &message->message_data)) {
+        goto on_error;
+    }
+
+    if (aws_channel_slot_send_message(query->channel->slot, message, AWS_CHANNEL_DIR_WRITE)) {
+        aws_raise_error(AWS_ERROR_UNKNOWN);
+        goto on_error;
+    }
+
+    query->state = AWS_DNS_QS_PENDING_RESPONSE;
+    return;
+
+on_error:
+
+    aws_mem_release(message->allocator, message);
 }
 
 static void s_dns_resolver_driver(struct aws_channel_task *task, void *arg, enum aws_task_status status) {
@@ -462,6 +698,7 @@ struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(
     resolver->on_initial_connection_callback = options->on_initial_connection_callback;
     resolver->on_initial_connection_user_data = options->on_initial_connection_user_data;
     resolver->initial_connection_callback_completed = false;
+    resolver->next_transaction_id = 0xabcd;
 
     resolver->host = aws_string_new_from_array(allocator, options->host.ptr, options->host.len);
     if (resolver->host == NULL) {
@@ -661,3 +898,33 @@ void aws_dns_query_internal_destroy(struct aws_dns_query_internal *query) {
 
     aws_mem_release(query->allocator, query);
 }
+
+void aws_dns_resource_record_clean_up(struct aws_dns_resource_record *record) {
+    aws_byte_buf_clean_up(&record->name);
+    aws_byte_buf_clean_up(&record->data);
+}
+
+static void s_aws_dns_query_result_clean_up_resource_record_list(struct aws_array_list *records) {
+    size_t record_count = aws_array_list_length(records);
+    for (size_t i = 0; i < record_count; ++i) {
+        struct aws_dns_resource_record *record_ptr = NULL;
+        aws_array_list_get_at_ptr(records, (void **)&record_ptr, i);
+
+        aws_dns_resource_record_clean_up(record_ptr);
+    }
+
+    aws_array_list_clean_up(records);
+}
+
+
+void aws_dns_query_result_clean_up(struct aws_dns_query_result *result) {
+    if (result == NULL) {
+        return;
+    }
+
+    s_aws_dns_query_result_clean_up_resource_record_list(&result->question_records);
+    s_aws_dns_query_result_clean_up_resource_record_list(&result->answer_records);
+    s_aws_dns_query_result_clean_up_resource_record_list(&result->authority_records);
+    s_aws_dns_query_result_clean_up_resource_record_list(&result->additional_records);
+}
+
