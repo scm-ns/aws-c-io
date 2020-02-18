@@ -180,6 +180,7 @@ struct aws_server_bootstrap {
  */
 struct aws_socket_channel_bootstrap_options {
     struct aws_client_bootstrap *bootstrap;
+    struct aws_event_loop *override_loop;
     const char *host_name;
     uint16_t port;
     const struct aws_socket_options *socket_options;

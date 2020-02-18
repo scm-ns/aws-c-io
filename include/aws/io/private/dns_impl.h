@@ -29,6 +29,7 @@ enum aws_dns_query_state {
     AWS_DNS_QS_INITIALIZED,
     AWS_DNS_QS_PENDING_REQUEST,
     AWS_DNS_QS_PENDING_RESPONSE,
+    AWS_DNS_QS_COMPLETE,
 };
 
 struct aws_dns_query_internal {
@@ -40,9 +41,10 @@ struct aws_dns_query_internal {
 
     enum aws_dns_query_state state;
     uint16_t transaction_id;
-    uint64_t start_timestamp;
 
-    struct aws_channel_task timeout_task;
+    uint64_t timeout_ns;
+    struct aws_task timeout_task;
+    bool is_timeout_scheduled;
 
     /* persistent query properties */
     struct aws_string *name;
@@ -98,6 +100,7 @@ struct aws_dns_resolver_udp_channel {
     struct aws_string *host;
     uint16_t port;
     struct aws_client_bootstrap *bootstrap;
+    struct aws_event_loop *loop;
     aws_dns_resolver_udp_channel_on_destroyed_callback_fn *on_destroyed_callback;
     void *on_destroyed_user_data;
     aws_dns_resolver_udp_channel_on_initial_connection_callback_fn *on_initial_connection_callback;
@@ -119,6 +122,7 @@ struct aws_dns_resolver_udp_channel {
     struct dns_resolver_udp_channel_reconnect_task *reconnect_task;
 
     struct aws_linked_list out_of_thread_queries;
+    struct aws_linked_list driver_queries;
 
     struct aws_channel_task channel_driver_task;
     bool is_channel_driver_scheduled;

@@ -131,6 +131,7 @@ struct client_channel_data {
 
 struct client_connection_args {
     struct aws_client_bootstrap *bootstrap;
+    struct aws_event_loop *override_loop;
     aws_client_bootstrap_on_channel_event_fn *creation_callback;
     aws_client_bootstrap_on_channel_event_fn *setup_callback;
     aws_client_bootstrap_on_channel_event_fn *shutdown_callback;
@@ -145,6 +146,14 @@ struct client_connection_args {
     bool setup_called;
     uint32_t ref_count;
 };
+
+static struct aws_event_loop *s_get_client_event_loop(struct client_connection_args *connection_args) {
+    if (connection_args->override_loop != NULL) {
+        return connection_args->override_loop;
+    }
+
+    return aws_event_loop_group_get_next_loop(connection_args->bootstrap->event_loop_group);
+}
 
 void s_client_connection_args_acquire(struct client_connection_args *args) {
     AWS_ASSERT(args);
@@ -626,8 +635,7 @@ static void s_on_host_resolved(
         (void *)client_connection_args->bootstrap,
         (unsigned long long)host_addresses_len);
     /* use this event loop for all outgoing connection attempts (only one will ultimately win). */
-    struct aws_event_loop *connect_loop =
-        aws_event_loop_group_get_next_loop(client_connection_args->bootstrap->event_loop_group);
+    struct aws_event_loop *connect_loop = s_get_client_event_loop(client_connection_args);
     client_connection_args->addresses_count = (uint8_t)host_addresses_len;
 
     /* allocate all the task data first, in case it fails... */
@@ -720,6 +728,7 @@ int aws_client_bootstrap_new_socket_channel(struct aws_socket_channel_bootstrap_
 
     client_connection_args->user_data = options->user_data;
     client_connection_args->bootstrap = bootstrap;
+    client_connection_args->override_loop = options->override_loop;
     s_client_connection_args_acquire(client_connection_args);
     client_connection_args->creation_callback = options->creation_callback;
     client_connection_args->setup_callback = options->setup_callback;
@@ -801,7 +810,7 @@ int aws_client_bootstrap_new_socket_channel(struct aws_socket_channel_bootstrap_
 
         client_connection_args->addresses_count = 1;
 
-        struct aws_event_loop *connect_loop = aws_event_loop_group_get_next_loop(bootstrap->event_loop_group);
+        struct aws_event_loop *connect_loop = s_get_client_event_loop(client_connection_args);
 
         s_client_connection_args_acquire(client_connection_args);
         if (aws_socket_connect(

@@ -15,6 +15,7 @@
 
 #include <aws/testing/aws_test_harness.h>
 
+#include <aws/common/clock.h>
 #include <aws/common/condition_variable.h>
 #include <aws/common/mutex.h>
 #include <aws/io/channel_bootstrap.h>
@@ -33,7 +34,10 @@ struct aws_dns_resolver_udp_test {
     struct aws_mutex lock;
     struct aws_condition_variable signal;
 
+    int query_error_code;
+
     bool connected;
+    bool query_complete;
     bool resolver_shutdown;
     bool bootstrap_shutdown;
 };
@@ -84,6 +88,27 @@ static void s_on_resolver_initial_connection(void *user_data) {
     aws_mutex_unlock(&s_test.lock);
 
     aws_condition_variable_notify_one(&s_test.signal);
+}
+
+static void s_on_query_complete(struct aws_dns_query_result *result, int error_code, void *user_data) {
+    aws_mutex_lock(&s_test.lock);
+    s_test.query_complete = true;
+    s_test.query_error_code = error_code;
+    aws_mutex_unlock(&s_test.lock);
+
+    aws_condition_variable_notify_one(&s_test.signal);
+}
+
+static bool s_query_complete_predicate(void *user_data) {
+    (void)user_data;
+
+    return s_test.query_complete;
+}
+
+static void s_wait_on_query_complete(void) {
+    aws_mutex_lock(&s_test.lock);
+    aws_condition_variable_wait_pred(&s_test.signal, &s_test.lock, s_query_complete_predicate, NULL);
+    aws_mutex_unlock(&s_test.lock);
 }
 
 static int s_init_udp_test(struct aws_allocator *allocator) {
@@ -164,3 +189,52 @@ static int s_dns_udp_resolver_create_destroy_test(struct aws_allocator *allocato
     return AWS_OP_SUCCESS;
 }
 AWS_TEST_CASE(dns_udp_resolver_create_destroy_test, s_dns_udp_resolver_create_destroy_test)
+
+static int s_dns_udp_resolver_timeout_test(struct aws_allocator *allocator, void *ctx) {
+    (void)allocator;
+    (void)ctx;
+
+    s_init_udp_test(allocator);
+
+    struct aws_dns_query query = {
+        .query_type = AWS_DNS_RR_A,
+        .hostname = aws_byte_cursor_from_c_str("s3.amazonaws.com"),
+        .on_completed_callback = s_on_query_complete,
+    };
+
+    aws_dns_resolver_udp_channel_make_query(s_test.resolver, &query);
+
+    s_wait_on_query_complete();
+
+    s_shutdown_udp_test();
+
+    ASSERT_TRUE(s_test.query_error_code == AWS_IO_DNS_QUERY_TIMEOUT);
+
+    return AWS_OP_SUCCESS;
+}
+AWS_TEST_CASE(dns_udp_resolver_timeout_test, s_dns_udp_resolver_timeout_test)
+
+static int s_dns_udp_resolver_interrupt_test(struct aws_allocator *allocator, void *ctx) {
+    (void)allocator;
+    (void)ctx;
+
+    s_init_udp_test(allocator);
+
+    struct aws_dns_query query = {
+        .query_type = AWS_DNS_RR_A,
+        .hostname = aws_byte_cursor_from_c_str("s3.amazonaws.com"),
+        .on_completed_callback = s_on_query_complete,
+    };
+
+    aws_dns_resolver_udp_channel_make_query(s_test.resolver, &query);
+
+    uint64_t sleep_time = aws_timestamp_convert(1, AWS_TIMESTAMP_SECS, AWS_TIMESTAMP_NANOS, NULL);
+    aws_thread_current_sleep(sleep_time);
+
+    s_shutdown_udp_test();
+
+    ASSERT_TRUE(s_test.query_error_code == AWS_IO_DNS_QUERY_INTERRUPTED);
+
+    return AWS_OP_SUCCESS;
+}
+AWS_TEST_CASE(dns_udp_resolver_interrupt_test, s_dns_udp_resolver_interrupt_test)

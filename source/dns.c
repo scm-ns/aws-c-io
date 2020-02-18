@@ -59,6 +59,9 @@ static void s_link_query(struct aws_dns_query_internal *query) {
         case AWS_DNS_QS_PENDING_RESPONSE:
             aws_linked_list_push_back(&query->channel->outstanding_queries, &query->node);
             break;
+
+        default:
+            break;
     }
 }
 
@@ -86,8 +89,6 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
         return;
     }
 
-    /* clean up pending queries; this can happen if we shutdown while the main connection is down (no task
-     * is scheduled for the tasks in pending queries */
     s_cancel_all_queries(resolver);
 
     aws_mutex_clean_up(&resolver->lock);
@@ -242,15 +243,21 @@ static void s_aws_dns_resolver_impl_udp_shutdown(
             AWS_LOGF_DEBUG(AWS_LS_IO_DNS, "id=%p: Udp DNS Connection dropped, scheduling retry", (void *)resolver);
         }
 
-        struct aws_event_loop *el = aws_event_loop_group_get_next_loop(resolver->bootstrap->event_loop_group);
         resolver->state = AWS_DNS_UDP_CHANNEL_RECONNECTING;
 
-        s_aws_dns_resolver_impl_udp_fail_query_list(&resolver->outstanding_queries);
+        while (!aws_linked_list_empty(&resolver->outstanding_queries)) {
+            struct aws_linked_list_node *node = aws_linked_list_pop_front(&resolver->outstanding_queries);
+            struct aws_dns_query_internal *query = AWS_CONTAINER_OF(node, struct aws_dns_query_internal, node);
+
+            s_unlink_query(query);
+            query->state = AWS_DNS_QS_PENDING_REQUEST;
+            s_link_query(query);
+        }
 
         uint64_t reconnect_time_ns = 0;
-        aws_event_loop_current_clock_time(el, &reconnect_time_ns);
+        aws_event_loop_current_clock_time(resolver->loop, &reconnect_time_ns);
         reconnect_time_ns += aws_timestamp_convert(2, AWS_TIMESTAMP_SECS, AWS_TIMESTAMP_NANOS, NULL);
-        aws_event_loop_schedule_task_future(el, &resolver->reconnect_task->task, reconnect_time_ns);
+        aws_event_loop_schedule_task_future(resolver->loop, &resolver->reconnect_task->task, reconnect_time_ns);
     } else if (resolver->state == AWS_DNS_UDP_CHANNEL_DISCONNECTING) {
 
         resolver->state = AWS_DNS_UDP_CHANNEL_DISCONNECTED;
@@ -265,6 +272,25 @@ static void s_aws_dns_resolver_impl_udp_shutdown(
     if (finalize) {
         s_aws_dns_resolver_impl_udp_destroy_finalize(resolver);
     }
+}
+
+static void s_schedule_channel_driver_if_needed(struct aws_dns_resolver_udp_channel *resolver) {
+    if (aws_linked_list_empty(&resolver->pending_queries)) {
+        return;
+    }
+
+    if (resolver->state != AWS_DNS_UDP_CHANNEL_CONNECTED) {
+        return;
+    }
+
+    aws_mutex_lock(&resolver->lock);
+
+    if (!resolver->is_channel_driver_scheduled) {
+        resolver->is_channel_driver_scheduled = true;
+        aws_channel_schedule_task_now(resolver->slot->channel, &resolver->channel_driver_task);
+    }
+
+    aws_mutex_unlock(&resolver->lock);
 }
 
 static void s_aws_dns_resolver_impl_udp_init(
@@ -332,6 +358,8 @@ static void s_aws_dns_resolver_impl_udp_init(
 
         resolver->state = AWS_DNS_UDP_CHANNEL_CONNECTED;
 
+        s_schedule_channel_driver_if_needed(resolver);
+
         if (!resolver->initial_connection_callback_completed) {
             resolver->initial_connection_callback_completed = true;
             make_initial_connection_callback = true;
@@ -358,6 +386,7 @@ static int s_connect(struct aws_dns_resolver_udp_channel *resolver) {
 
     struct aws_socket_channel_bootstrap_options channel_options = {
         .bootstrap = resolver->bootstrap,
+        .override_loop = resolver->loop,
         .host_name = (const char *)resolver->host->bytes,
         .port = resolver->port,
         .socket_options = &socket_options,
@@ -369,17 +398,6 @@ static int s_connect(struct aws_dns_resolver_udp_channel *resolver) {
     return aws_client_bootstrap_new_socket_channel(&channel_options);
 }
 
-static void s_schedule_channel_driver_if_needed(struct aws_dns_resolver_udp_channel *resolver) {
-    aws_mutex_lock(&resolver->lock);
-
-    if (!resolver->is_channel_driver_scheduled) {
-        resolver->is_channel_driver_scheduled = true;
-        aws_channel_schedule_task_now(resolver->slot->channel, &resolver->channel_driver_task);
-    }
-
-    aws_mutex_unlock(&resolver->lock);
-}
-
 static void s_send_query(struct aws_dns_query_internal *query) {
     (void)query;
 }
@@ -389,28 +407,26 @@ static void s_dns_resolver_driver(struct aws_channel_task *task, void *arg, enum
 
     struct aws_dns_resolver_udp_channel *resolver = arg;
 
-    struct aws_linked_list empty_list;
-    aws_linked_list_init(&empty_list);
-
     aws_mutex_lock(&resolver->lock);
     resolver->is_channel_driver_scheduled = false;
-    aws_linked_list_swap_contents(&empty_list, &resolver->out_of_thread_queries);
+    aws_linked_list_swap_contents(&resolver->driver_queries, &resolver->out_of_thread_queries);
     aws_mutex_unlock(&resolver->lock);
 
-    while (!aws_linked_list_empty(&empty_list)) {
-        struct aws_linked_list_node *node = aws_linked_list_pop_front(&empty_list);
+    uint64_t now = 0;
+    aws_channel_current_clock_time(resolver->slot->channel, &now);
+
+    while (!aws_linked_list_empty(&resolver->driver_queries)) {
+        struct aws_linked_list_node *node = aws_linked_list_pop_front(&resolver->driver_queries);
         struct aws_dns_query_internal *query = AWS_CONTAINER_OF(node, struct aws_dns_query_internal, node);
         query->state = AWS_DNS_QS_PENDING_REQUEST;
         s_link_query(query);
 
-        uint64_t now = 0;
-        aws_channel_current_clock_time(resolver->slot->channel, &now);
-
         uint32_t timeout_ms =
             query->options.timeout_millis > 0 ? query->options.timeout_millis : DEFAULT_TIMEOUT_INTERVAL_MS;
 
-        uint64_t timeout_ns = aws_timestamp_convert(timeout_ms, AWS_TIMESTAMP_MILLIS, AWS_TIMESTAMP_NANOS, NULL);
-        aws_channel_schedule_task_future(resolver->slot->channel, &query->timeout_task, now + timeout_ns);
+        query->timeout_ns = now + aws_timestamp_convert(timeout_ms, AWS_TIMESTAMP_MILLIS, AWS_TIMESTAMP_NANOS, NULL);
+        aws_event_loop_schedule_task_future(resolver->loop, &query->timeout_task, query->timeout_ns);
+        query->is_timeout_scheduled = true;
     }
 
     if (status == AWS_TASK_STATUS_CANCELED) {
@@ -426,9 +442,7 @@ static void s_dns_resolver_driver(struct aws_channel_task *task, void *arg, enum
         s_link_query(query);
     }
 
-    if (!aws_linked_list_empty(&resolver->pending_queries)) {
-        s_schedule_channel_driver_if_needed(resolver);
-    }
+    s_schedule_channel_driver_if_needed(resolver);
 }
 
 struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(
@@ -442,6 +456,7 @@ struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(
 
     resolver->allocator = allocator;
     resolver->bootstrap = options->bootstrap;
+    resolver->loop = aws_event_loop_group_get_next_loop(options->bootstrap->event_loop_group);
     resolver->on_destroyed_callback = options->on_destroyed_callback;
     resolver->on_destroyed_user_data = options->on_destroyed_user_data;
     resolver->on_initial_connection_callback = options->on_initial_connection_callback;
@@ -474,6 +489,7 @@ struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(
     aws_linked_list_init(&resolver->pending_queries);
     aws_linked_list_init(&resolver->outstanding_queries);
     aws_linked_list_init(&resolver->out_of_thread_queries);
+    aws_linked_list_init(&resolver->driver_queries);
 
     aws_channel_task_init(&resolver->channel_driver_task, s_dns_resolver_driver, resolver, "dns_resolver_driver_task");
 
@@ -563,15 +579,17 @@ int aws_dns_resolver_udp_channel_make_query(
     return AWS_OP_SUCCESS;
 }
 
-static void s_dns_timeout_task(struct aws_channel_task *task, void *arg, enum aws_task_status status) {
+static void s_dns_timeout_task(struct aws_task *task, void *arg, enum aws_task_status status) {
     (void)task;
-    (void)status;
+
+    if (status != AWS_TASK_STATUS_RUN_READY) {
+        return;
+    }
 
     struct aws_dns_query_internal *query = arg;
 
-    int error_code = (status == AWS_TASK_STATUS_RUN_READY) ? AWS_IO_DNS_QUERY_TIMEOUT : AWS_IO_DNS_QUERY_INTERRUPTED;
-
-    query->on_completed_callback(NULL, error_code, query->user_data);
+    query->is_timeout_scheduled = false;
+    query->on_completed_callback(NULL, AWS_IO_DNS_QUERY_TIMEOUT, query->user_data);
 
     s_unlink_query(query);
     aws_dns_query_internal_destroy(query);
@@ -590,9 +608,9 @@ struct aws_dns_query_internal *aws_dns_query_internal_new(
     internal_query->allocator = allocator;
     internal_query->channel = channel;
     internal_query->state = AWS_DNS_QS_INITIALIZED;
-    internal_query->start_timestamp = 0;
+    internal_query->timeout_ns = 0;
 
-    aws_channel_task_init(&internal_query->timeout_task, s_dns_timeout_task, internal_query, "dns_timeout_task");
+    aws_task_init(&internal_query->timeout_task, s_dns_timeout_task, internal_query, "dns_timeout_task");
 
     internal_query->name = aws_string_new_from_array(allocator, query->hostname.ptr, query->hostname.len);
     if (internal_query->name == NULL) {
@@ -625,6 +643,15 @@ fail:
 void aws_dns_query_internal_destroy(struct aws_dns_query_internal *query) {
     if (query == NULL) {
         return;
+    }
+
+    if (query->is_timeout_scheduled) {
+        aws_event_loop_cancel_task(query->channel->loop, &query->timeout_task);
+
+        query->is_timeout_scheduled = false;
+        if (query->state != AWS_DNS_QS_COMPLETE) {
+            query->on_completed_callback(NULL, AWS_IO_DNS_QUERY_INTERRUPTED, query->user_data);
+        }
     }
 
     if (query->name != NULL) {
