@@ -933,10 +933,21 @@ static int default_resolve_host(
     return AWS_OP_SUCCESS;
 }
 
+static size_t default_get_host_count(struct aws_host_resolver *host_resolver)
+{
+    struct default_host_resolver *default_host_resolver = host_resolver->impl;
+
+    aws_mutex_lock(&default_host_resolver->host_lock);
+    size_t host_count = aws_lru_cache_get_element_count(&default_host_resolver->host_table);
+    aws_mutex_unlock(&default_host_resolver->host_lock);
+    return host_count;
+}
+
 static struct aws_host_resolver_vtable s_vtable = {
     .purge_cache = resolver_purge_cache,
     .resolve_host = default_resolve_host,
     .record_connection_failure = resolver_record_connection_failure,
+    .get_host_count = default_get_host_count,
     .destroy = resolver_destroy,
 };
 
@@ -984,3 +995,9 @@ int aws_host_resolver_init_default(
 
     return AWS_OP_SUCCESS;
 }
+
+size_t aws_host_resolver_get_host_count(struct aws_host_resolver *resolver)
+{
+    return resolver->vtable->get_host_count(resolver);
+}
+
