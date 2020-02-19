@@ -472,6 +472,13 @@ static void resolver_thread_fn(void *arg) {
             unsolicited_resolve_count = 0;
         }
 
+        bool should_resolve = false;
+        aws_mutex_lock(&host_entry->entry_lock);
+        should_resolve =
+            aws_linked_list_empty(&host_entry->aaaa_records.list) && aws_linked_list_empty(&host_entry->a_records.list);
+
+        aws_mutex_unlock(&host_entry->entry_lock);
+
         AWS_LOGF_TRACE(
             AWS_LS_IO_DNS,
             "static, resolving %s, unsolicited resolve count %d",
@@ -483,11 +490,17 @@ static void resolver_thread_fn(void *arg) {
 
         /* resolve and then process each record */
         int err_code = AWS_ERROR_SUCCESS;
-        if (host_entry->resolution_config.impl(
-                host_entry->allocator, host_entry->host_name, &address_list, host_entry->resolution_config.impl_data)) {
+        if (should_resolve) {
+            if (host_entry->resolution_config.impl(
+                    host_entry->allocator,
+                    host_entry->host_name,
+                    &address_list,
+                    host_entry->resolution_config.impl_data)) {
 
-            err_code = aws_last_error();
+                err_code = aws_last_error();
+            }
         }
+
         uint64_t timestamp = 0;
         aws_sys_clock_get_ticks(&timestamp);
         uint64_t new_expiry = timestamp + (host_entry->resolution_config.max_ttl * NS_PER_SEC);
