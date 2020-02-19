@@ -20,14 +20,12 @@
 #include <aws/common/string.h>
 
 #include <aws/io/channel_bootstrap.h>
-#include <aws/io/private/dns_impl.h>
 #include <aws/io/event_loop.h>
 #include <aws/io/logging.h>
+#include <aws/io/private/dns_impl.h>
 #include <aws/io/socket.h>
 
 #include <inttypes.h>
-
-
 
 #define ELASTIDIG_VERSION "0.0.1"
 
@@ -36,6 +34,7 @@ struct aws_dns_resource_record_type_name {
     enum aws_dns_resource_record_type record_type;
 };
 
+/* clang-format off */
 static struct aws_dns_resource_record_type_name s_record_names [] = {
     { .record_type_name = "A", .record_type = AWS_DNS_RR_A },
     { .record_type_name = "NS", .record_type = AWS_DNS_RR_NS },
@@ -124,6 +123,7 @@ static struct aws_dns_resource_record_type_name s_record_names [] = {
     { .record_type_name = "TA", .record_type = AWS_DNS_RR_TA },
     { .record_type_name = "DLV", .record_type = AWS_DNS_RR_DLV },
 };
+/* clang-format on */
 
 enum aws_dns_resource_record_type s_aws_c_string_to_aws_dns_resource_record_type(const char *record_type_string) {
     size_t record_type_count = AWS_ARRAY_SIZE(s_record_names);
@@ -139,7 +139,7 @@ enum aws_dns_resource_record_type s_aws_c_string_to_aws_dns_resource_record_type
     return AWS_DNS_RR_UNKNOWN;
 }
 
-const char * s_aws_dns_resource_record_type_to_c_str(enum aws_dns_resource_record_type record_type) {
+const char *s_aws_dns_resource_record_type_to_c_str(enum aws_dns_resource_record_type record_type) {
     size_t record_type_count = AWS_ARRAY_SIZE(s_record_names);
 
     for (size_t i = 0; i < record_type_count; ++i) {
@@ -170,30 +170,18 @@ const char *s_aws_dns_flags_opcode_type_to_c_str(enum aws_dns_flags_opcode_type 
 }
 
 const char *s_result_code_names[] = {
-    "NO_ERROR",
-    "FORMAT_ERROR",
-    "SERVER_FAILURE",
-    "NX_DOMAIN",
-    "NOT_IMPLEMENTED",
-    "REFUSED",
-    "YX_DOMAIN",
-    "YX_RRSET",
-    "NX_RRSET",
-    "NOT_AUTHORITATIVE/AUTHORIZED",
-    "NOT_IN_ZONE",
-    "DSO_TYPE_NOT_IMPLEMENTED",
-    "UNKNOWN",
-    "UNKNOWN",
-    "UNKNOWN",
-    "UNKNOWN",
-    "BAD_OPT_VERSION",
-    "TSIG_SIGNATURE_FAILURE",
-    "RC_BAD_TIME",
-    "BAD_MODE",
-    "BAD_NAME",
-    "BAD_ALGORITHM",
-    "BAD_TRUNC",
-    "BAD_COOKIE",
+    "NO_ERROR",        "FORMAT_ERROR",
+    "SERVER_FAILURE",  "NX_DOMAIN",
+    "NOT_IMPLEMENTED", "REFUSED",
+    "YX_DOMAIN",       "YX_RRSET",
+    "NX_RRSET",        "NOT_AUTHORITATIVE/AUTHORIZED",
+    "NOT_IN_ZONE",     "DSO_TYPE_NOT_IMPLEMENTED",
+    "UNKNOWN",         "UNKNOWN",
+    "UNKNOWN",         "UNKNOWN",
+    "BAD_OPT_VERSION", "TSIG_SIGNATURE_FAILURE",
+    "RC_BAD_TIME",     "BAD_MODE",
+    "BAD_NAME",        "BAD_ALGORITHM",
+    "BAD_TRUNC",       "BAD_COOKIE",
 };
 
 const char *s_aws_dns_result_code_type_to_c_str(enum aws_dns_result_code_type result_code) {
@@ -238,12 +226,14 @@ static void s_usage(int exit_code) {
     exit(exit_code);
 }
 
+/* clang-format off */
 static struct aws_cli_option s_long_options[] = {
     {"version", AWS_CLI_OPTIONS_NO_ARGUMENT, NULL, 'V'},
     {"help", AWS_CLI_OPTIONS_NO_ARGUMENT, NULL, 'h'},
     /* Per getopt(3) the last element of the array has to be filled with all zeros */
     {NULL, AWS_CLI_OPTIONS_NO_ARGUMENT, NULL, 0},
 };
+/* clang-format on */
 
 static void s_parse_options(int argc, char **argv, struct elastidig_ctx *ctx) {
     while (true) {
@@ -323,7 +313,11 @@ static void s_print_header(struct aws_dns_query_result *result) {
     enum aws_dns_flags_opcode_type opcode = aws_dns_fixed_flags_get_opcode(result->fixed_header_flags);
     enum aws_dns_result_code_type result_code = aws_dns_fixed_flags_get_result_code(result->fixed_header_flags);
 
-    printf(";; ->>HEADER<<- opcode: %s, status: %s, id: %d\n", s_aws_dns_flags_opcode_type_to_c_str(opcode), s_aws_dns_result_code_type_to_c_str(result_code), (int)result->transaction_id);
+    printf(
+        ";; ->>HEADER<<- opcode: %s, status: %s, id: %d\n",
+        s_aws_dns_flags_opcode_type_to_c_str(opcode),
+        s_aws_dns_result_code_type_to_c_str(result_code),
+        (int)result->transaction_id);
 
     // ;; flags: qr rd ra; QUERY: 1, ANSWER: 6, AUTHORITY: 0, ADDITIONAL: 5
     printf(";; flags:");
@@ -343,7 +337,12 @@ static void s_print_header(struct aws_dns_query_result *result) {
         printf(" tc");
     }
 
-    printf("; QUERY: %d, ANSWER: %d, AUTHORITY: %d, ADDITIONAL: %d\n", (int)aws_array_list_length(&result->question_records), (int)aws_array_list_length(&result->answer_records), (int)aws_array_list_length(&result->authority_records), (int)aws_array_list_length(&result->additional_records));
+    printf(
+        "; QUERY: %d, ANSWER: %d, AUTHORITY: %d, ADDITIONAL: %d\n",
+        (int)aws_array_list_length(&result->question_records),
+        (int)aws_array_list_length(&result->answer_records),
+        (int)aws_array_list_length(&result->authority_records),
+        (int)aws_array_list_length(&result->additional_records));
 }
 
 static void s_print_ipv4_address(struct aws_dns_resource_record *record) {
@@ -393,9 +392,9 @@ static void s_print_record_data(struct aws_dns_resource_record *record) {
         case AWS_DNS_RR_CNAME:
         case AWS_DNS_RR_DNAME: {
             if (record->data.len > 0) {
-                struct aws_string *data_as_string = aws_string_new_from_array(aws_default_allocator(),
-                                                                              record->data.buffer, record->data.len);
-                printf("%-40s ", (const char *) data_as_string->bytes);
+                struct aws_string *data_as_string =
+                    aws_string_new_from_array(aws_default_allocator(), record->data.buffer, record->data.len);
+                printf("%-40s ", (const char *)data_as_string->bytes);
                 aws_string_destroy(data_as_string);
             }
             break;
@@ -409,7 +408,8 @@ static void s_print_record_data(struct aws_dns_resource_record *record) {
 static void s_print_record(struct aws_dns_resource_record *record) {
     (void)record;
 
-    struct aws_string *name_as_string = aws_string_new_from_array(aws_default_allocator(), record->name.buffer, record->name.len);
+    struct aws_string *name_as_string =
+        aws_string_new_from_array(aws_default_allocator(), record->name.buffer, record->name.len);
 
     printf("%-40s ", (const char *)name_as_string->bytes);
     printf("%10d ", record->ttl);
@@ -468,7 +468,9 @@ static void s_output_query_results(struct aws_dns_query_result *result, int erro
 
     uint64_t difference_ns = now - app_ctx->start_time_ns;
 
-    printf("\n;; Query Time: %" PRIu64 " msec\n", aws_timestamp_convert(difference_ns, AWS_TIMESTAMP_NANOS, AWS_TIMESTAMP_MILLIS, NULL));
+    printf(
+        "\n;; Query Time: %" PRIu64 " msec\n",
+        aws_timestamp_convert(difference_ns, AWS_TIMESTAMP_NANOS, AWS_TIMESTAMP_MILLIS, NULL));
 }
 
 static void s_on_query_complete(struct aws_dns_query_result *result, int error_code, void *user_data) {
@@ -578,7 +580,6 @@ static void s_cleanup_elastidig(struct elastidig_ctx *app_ctx) {
 
     aws_logger_clean_up(&app_ctx->logger);
 }
-
 
 int main(int argc, char **argv) {
     struct aws_allocator *allocator = aws_default_allocator();
