@@ -925,3 +925,50 @@ void aws_dns_query_result_clean_up(struct aws_dns_query_result *result) {
     s_aws_dns_query_result_clean_up_resource_record_list(&result->authority_records);
     s_aws_dns_query_result_clean_up_resource_record_list(&result->additional_records);
 }
+
+#define AWS_DNS_OPCODE_MASK 0x0F
+#define AWS_DNS_OPCODE_SHIFT 11
+#define AWS_DNS_RESULT_CODE_MASK 0x0F
+
+#define AWS_DNS_FIXED_HEADER_FLAG_QUERY (1U << 15)
+#define AWS_DNS_FIXED_HEADER_FLAG_TRUNCATED (1U << 9)
+#define AWS_DNS_FIXED_HEADER_FLAG_AUTHENTICATED (1U << 10)
+#define AWS_DNS_FIXED_HEADER_FLAG_AUTHORITATIVE (1U << 5)
+#define AWS_DNS_FIXED_HEADER_FLAG_RECURSION_DESIRED (1U << 8)
+#define AWS_DNS_FIXED_HEADER_FLAG_RECURSION_AVAILABLE (1U << 7)
+
+bool aws_dns_fixed_flags_is_truncated(uint16_t flags) {
+    return (flags & AWS_DNS_FIXED_HEADER_FLAG_TRUNCATED) != 0;
+}
+
+bool aws_dns_fixed_flags_is_authenticated(uint16_t flags) {
+    return (flags & AWS_DNS_FIXED_HEADER_FLAG_AUTHENTICATED) != 0;
+}
+
+bool aws_dns_fixed_flags_is_authoritative(uint16_t flags) {
+    return (flags & AWS_DNS_FIXED_HEADER_FLAG_AUTHORITATIVE) != 0;
+}
+
+bool aws_dns_fixed_flags_is_recursion_desired(uint16_t flags) {
+    return (flags & AWS_DNS_FIXED_HEADER_FLAG_RECURSION_DESIRED) != 0;
+}
+
+bool aws_dns_fixed_flags_is_recursion_available(uint16_t flags) {
+    return (flags & AWS_DNS_FIXED_HEADER_FLAG_RECURSION_AVAILABLE) != 0;
+}
+
+bool aws_dns_fixed_flags_is_query(uint16_t flags) {
+    return (flags & AWS_DNS_FIXED_HEADER_FLAG_QUERY) == 0;
+}
+
+enum aws_dns_flags_opcode_type aws_dns_fixed_flags_get_opcode(uint16_t flags) {
+    uint16_t opcode = (flags >> AWS_DNS_OPCODE_SHIFT) & AWS_DNS_OPCODE_MASK;
+
+    return (enum aws_dns_flags_opcode_type)opcode;
+}
+
+enum aws_dns_result_code_type aws_dns_fixed_flags_get_result_code(uint16_t flags) {
+    uint16_t result_code = flags & AWS_DNS_RESULT_CODE_MASK;
+
+    return (enum aws_dns_result_code_type)result_code;
+}

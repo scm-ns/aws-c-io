@@ -28,6 +28,8 @@ struct aws_dns_resolver;
 typedef void(aws_dns_on_destroy_completed_fn)(struct aws_dns_resolver *resolver, void *user_data);
 
 enum aws_dns_resource_record_type {
+    AWS_DNS_RR_UNKNOWN = 0,
+
     AWS_DNS_RR_A = 1,
     AWS_DNS_RR_NS = 2,
     AWS_DNS_RR_MD = 3,
@@ -141,6 +143,15 @@ enum aws_dns_result_code_type {
     AWS_DNS_RC_BAD_COOKIE = 23,
 };
 
+enum aws_dns_flags_opcode_type {
+    AWS_DNS_FOT_QUERY = 0,
+    AWS_DNS_FOT_INVERSE_QUERY = 1,
+    AWS_DNS_FOT_STATUS = 2,
+    AWS_DNS_FOT_NOTIFY = 4,
+    AWS_DNS_FOT_UPDATE = 5,
+    AWS_DNS_FOT_DSO = 6,
+};
+
 struct aws_dns_resource_record {
     struct aws_byte_buf name;
 
@@ -201,17 +212,13 @@ struct aws_dns_query_options {
 
 struct aws_dns_query_result {
     uint16_t transaction_id;
-
-    enum aws_dns_result_code_type result_code;
+    uint16_t fixed_header_flags;
 
     /* arrays of aws_dns_resource_record */
     struct aws_array_list question_records;
     struct aws_array_list answer_records;
     struct aws_array_list authority_records;
     struct aws_array_list additional_records;
-
-    bool authoritative;
-    bool authenticated;
 };
 
 typedef void(on_dns_query_completed_callback_fn)(struct aws_dns_query_result *result, int error_code, void *user_data);
@@ -269,6 +276,15 @@ void aws_dns_query_result_clean_up(struct aws_dns_query_result *result);
 
 AWS_IO_API
 void aws_dns_resource_record_clean_up(struct aws_dns_resource_record *record);
+
+AWS_IO_API bool aws_dns_fixed_flags_is_truncated(uint16_t flags);
+AWS_IO_API bool aws_dns_fixed_flags_is_authenticated(uint16_t flags);
+AWS_IO_API bool aws_dns_fixed_flags_is_authoritative(uint16_t flags);
+AWS_IO_API bool aws_dns_fixed_flags_is_recursion_desired(uint16_t flags);
+AWS_IO_API bool aws_dns_fixed_flags_is_recursion_available(uint16_t flags);
+AWS_IO_API bool aws_dns_fixed_flags_is_query(uint16_t flags);
+AWS_IO_API enum aws_dns_flags_opcode_type aws_dns_fixed_flags_get_opcode(uint16_t flags);
+AWS_IO_API enum aws_dns_result_code_type aws_dns_fixed_flags_get_result_code(uint16_t flags);
 
 AWS_EXTERN_C_END
 

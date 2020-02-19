@@ -52,6 +52,10 @@ static int s_decode_name(
                 return AWS_OP_ERR;
             }
 
+            /*
+             * compression labels are essentially a "goto" within the packet.  So the safest thing to do is just
+             * start fresh at the reference position.
+             */
             compression_dummy = whole_packet_cursor;
             aws_byte_cursor_advance(&compression_dummy, offset + 1);
             label_length = whole_packet_cursor.ptr[offset];
@@ -194,12 +198,6 @@ static int s_decode_resource_record_list(
     return AWS_OP_SUCCESS;
 }
 
-#define AWS_DNS_FIXED_HEADER_FLAG_QUERY (1U << 15)
-#define AWS_DNS_FIXED_HEADER_FLAG_OPCODE (0x0F << 11)
-#define AWS_DNS_FIXED_HEADER_FLAG_TRUNCATED (1U << 9)
-#define AWS_DNS_FIXED_HEADER_FLAG_AUTHENTICATED (1U << 10)
-#define AWS_DNS_FIXED_HEADER_FLAG_AUTHORITATIVE (1U << 5)
-
 /* assumes result is zeroed and not actually initialized, allocates records on demand */
 int aws_dns_decode_response(
     struct aws_dns_query_result *result,
@@ -212,36 +210,24 @@ int aws_dns_decode_response(
         return AWS_OP_ERR;
     }
 
-    uint16_t flags = 0;
-    if (!aws_byte_cursor_read_be16(&response_packet_cursor, &flags)) {
+    if (!aws_byte_cursor_read_be16(&response_packet_cursor, &result->fixed_header_flags)) {
         return AWS_OP_ERR;
     }
 
     /* only responses */
-    if ((flags & AWS_DNS_FIXED_HEADER_FLAG_QUERY) == 0) {
+    if (aws_dns_fixed_flags_is_query(result->fixed_header_flags)) {
         return AWS_OP_ERR;
     }
 
-    /* only opcode 0 */
-    if ((flags & AWS_DNS_FIXED_HEADER_FLAG_OPCODE) != 0) {
+    /* only QUERY opcode */
+    if (aws_dns_fixed_flags_get_opcode(result->fixed_header_flags) != AWS_DNS_FOT_QUERY) {
         return AWS_OP_ERR;
     }
 
     /* no way to handle this right now */
-    if (flags & AWS_DNS_FIXED_HEADER_FLAG_TRUNCATED) {
+    if (aws_dns_fixed_flags_is_truncated(result->fixed_header_flags)) {
         return AWS_OP_ERR;
     }
-
-    if (flags & AWS_DNS_FIXED_HEADER_FLAG_AUTHENTICATED) {
-        result->authenticated = true;
-    }
-
-    if (flags & AWS_DNS_FIXED_HEADER_FLAG_AUTHORITATIVE) {
-        result->authoritative = true;
-    }
-
-    uint16_t r_code = flags & 0x0F;
-    result->result_code = (enum aws_dns_result_code_type)r_code;
 
     uint16_t question_count = 0;
     if (!aws_byte_cursor_read_be16(&response_packet_cursor, &question_count)) {
