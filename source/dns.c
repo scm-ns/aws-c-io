@@ -46,7 +46,8 @@ static void s_link_query(struct aws_dns_query_internal *query) {
         case AWS_DNS_QS_INITIALIZED:
             aws_mutex_lock(&query->channel->lock);
             aws_linked_list_push_back(&query->channel->out_of_thread_queries, &query->node);
-            if (!query->channel->is_channel_driver_scheduled) {
+            if (!query->channel->is_channel_driver_scheduled &&
+                query->channel->state == AWS_DNS_UDP_CHANNEL_CONNECTED) {
                 aws_channel_schedule_task_now(query->channel->slot->channel, &query->channel->channel_driver_task);
                 query->channel->is_channel_driver_scheduled = true;
             }
@@ -97,7 +98,7 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
     aws_string_destroy(resolver->host);
 
     if (resolver->on_destroyed_callback) {
-        (resolver->on_destroyed_callback)(resolver->on_initial_connection_user_data);
+        (resolver->on_destroyed_callback)(resolver->on_destroyed_user_data);
     }
 
     aws_mem_release(resolver->allocator, resolver);
@@ -339,7 +340,7 @@ static void s_aws_dns_resolver_impl_udp_shutdown(
 }
 
 static void s_schedule_channel_driver_if_needed(struct aws_dns_resolver_udp_channel *resolver) {
-    if (aws_linked_list_empty(&resolver->pending_queries)) {
+    if (aws_linked_list_empty(&resolver->pending_queries) && aws_linked_list_empty(&resolver->out_of_thread_queries)) {
         return;
     }
 
@@ -374,10 +375,6 @@ static void s_aws_dns_resolver_impl_udp_init(
         return;
     }
 
-    bool make_initial_connection_callback = false;
-
-    aws_mutex_lock(&resolver->lock);
-
     /*
      * These feel impossible, but experience may tell differently:
      *
@@ -399,7 +396,6 @@ static void s_aws_dns_resolver_impl_udp_init(
             "id=%p: DNS UDP connection successfully opened, but shut down has been requested",
             (void *)resolver);
         aws_channel_shutdown(channel, AWS_ERROR_SUCCESS);
-        goto done;
     } else {
         AWS_FATAL_ASSERT(resolver->state == AWS_DNS_UDP_CHANNEL_CONNECTING);
 
@@ -414,7 +410,7 @@ static void s_aws_dns_resolver_impl_udp_init(
                 "id=%p: DNS UDP connection failed to create new slot, something has gone horribly wrong",
                 (void *)resolver);
             aws_channel_shutdown(channel, aws_last_error());
-            goto done;
+            return;
         }
 
         aws_channel_slot_insert_end(channel, resolver->slot);
@@ -426,16 +422,10 @@ static void s_aws_dns_resolver_impl_udp_init(
 
         if (!resolver->initial_connection_callback_completed) {
             resolver->initial_connection_callback_completed = true;
-            make_initial_connection_callback = true;
+            if (resolver->on_initial_connection_callback != NULL) {
+                (resolver->on_initial_connection_callback)(resolver->on_initial_connection_user_data);
+            }
         }
-    }
-
-done:
-
-    aws_mutex_unlock(&resolver->lock);
-
-    if (make_initial_connection_callback && resolver->on_initial_connection_callback != NULL) {
-        (resolver->on_initial_connection_callback)(resolver->on_initial_connection_user_data);
     }
 }
 
