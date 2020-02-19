@@ -945,6 +945,7 @@ static size_t default_get_host_address_count(
     aws_lru_cache_find(&default_host_resolver->host_table, host_name, (void **)&host_entry);
 
     if (!host_entry) {
+        aws_mutex_unlock(&default_host_resolver->host_lock);
         return 0;
     }
 

@@ -457,6 +457,12 @@ size_t aws_channel_handler_initial_window_size(struct aws_channel_handler *handl
 AWS_IO_API
 struct aws_channel_slot *aws_channel_get_first_slot(struct aws_channel *channel);
 
+AWS_IO_API
+void aws_channel_set_user_data(struct aws_channel *channel, void *user_data);
+
+AWS_IO_API
+void *aws_channel_get_user_data(struct aws_channel *channel);
+
 AWS_EXTERN_C_END
 
 #endif /* AWS_IO_CHANNEL_H */

@@ -68,6 +68,7 @@ struct aws_channel {
     struct aws_shutdown_notification_task shutdown_notify_task;
     aws_channel_on_shutdown_completed_fn *on_shutdown_completed;
     void *shutdown_user_data;
+    void *user_data;
     struct aws_atomic_var refcount;
     struct aws_task deletion_task;
 
@@ -222,6 +223,7 @@ struct aws_channel *aws_channel_new(
     channel->loop = event_loop;
     channel->on_shutdown_completed = callbacks->on_shutdown_completed;
     channel->shutdown_user_data = callbacks->shutdown_user_data;
+    channel->user_data = NULL;
 
     if (aws_array_list_init_dynamic(
             &channel->statistic_list, alloc, INITIAL_STATISTIC_LIST_SIZE, sizeof(struct aws_crt_statistics_base *))) {
@@ -1100,4 +1102,14 @@ int aws_channel_set_statistics_handler(struct aws_channel *channel, struct aws_c
 
 struct aws_event_loop *aws_channel_get_event_loop(struct aws_channel *channel) {
     return channel->loop;
+}
+
+void aws_channel_set_user_data(struct aws_channel *channel, void *user_data)
+{
+    channel->user_data = user_data;
+}
+
+void *aws_channel_get_user_data(struct aws_channel *channel)
+{
+    return channel->user_data;
 }

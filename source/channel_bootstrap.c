@@ -517,6 +517,9 @@ static void s_on_client_connection_established(struct aws_socket *socket, int er
 
     connection_args->channel_data.channel =
         aws_channel_new(connection_args->bootstrap->allocator, aws_socket_get_event_loop(socket), &channel_callbacks);
+
+	aws_channel_set_user_data(connection_args->channel_data.channel, socket);
+
     if (!connection_args->channel_data.channel) {
         aws_socket_clean_up(socket);
         aws_mem_release(connection_args->bootstrap->allocator, connection_args->channel_data.socket);
