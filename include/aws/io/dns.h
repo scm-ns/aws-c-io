@@ -117,6 +117,30 @@ enum aws_dns_resource_record_type {
 
 };
 
+enum aws_dns_result_code_type {
+    AWS_DNS_RC_NO_ERROR = 0,
+    AWS_DNS_RC_FORMAT_ERROR = 1,
+    AWS_DNS_RC_SERVER_FAILURE = 2,
+    AWS_DNS_RC_NX_DOMAIN = 3,
+    AWS_DNS_RC_NOT_IMPLEMENTED = 4,
+    AWS_DNS_RC_REFUSED = 5,
+    AWS_DNS_RC_YX_DOMAIN = 6,
+    AWS_DNS_RC_YX_RRSET = 7,
+    AWS_DNS_RC_NX_RRSET = 8,
+    AWS_DNS_RC_NOT_AUTHORITATIVE = 9,
+    AWS_DNS_RC_NOT_AUTHORIZED = 9,
+    AWS_DNS_RC_NOT_IN_ZONE = 10,
+    AWS_DNS_RC_DSO_TYPE_NOT_IMPLEMENTED = 11,
+    AWS_DNS_RC_BAD_OPT_VERSION = 16,
+    AWS_DNS_RC_TSIG_SIGNATURE_FAILURE = 17,
+    AWS_DNS_RC_BAD_TIME = 18,
+    AWS_DNS_RC_BAD_MODE = 19,
+    AWS_DNS_RC_BAD_NAME = 20,
+    AWS_DNS_RC_BAD_ALGORITHM = 21,
+    AWS_DNS_RC_BAD_TRUNC = 22,
+    AWS_DNS_RC_BAD_COOKIE = 23,
+};
+
 struct aws_dns_resource_record {
     struct aws_byte_buf name;
 
@@ -177,6 +201,8 @@ struct aws_dns_query_options {
 
 struct aws_dns_query_result {
     uint16_t transaction_id;
+
+    enum aws_dns_result_code_type result_code;
 
     /* arrays of aws_dns_resource_record */
     struct aws_array_list question_records;

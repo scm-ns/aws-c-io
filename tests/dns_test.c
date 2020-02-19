@@ -144,8 +144,8 @@ static int s_init_udp_test(struct aws_allocator *allocator, bool valid_endpoint)
 
     struct aws_byte_cursor host_cursor;
     if (valid_endpoint) {
-        /*host_cursor = aws_byte_cursor_from_c_str("127.0.0.53"),*/
-        host_cursor = aws_byte_cursor_from_c_str("10.106.49.51");
+        host_cursor = aws_byte_cursor_from_c_str("127.0.0.53");
+        /*host_cursor = aws_byte_cursor_from_c_str("10.106.49.51");*/
     } else {
         host_cursor = aws_byte_cursor_from_c_str("240.240.240.240");
     }

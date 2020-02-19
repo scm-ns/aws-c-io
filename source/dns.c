@@ -103,7 +103,9 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
     aws_mem_release(resolver->allocator, resolver);
 }
 
-static struct aws_dns_query_internal *s_find_matching_query(struct aws_dns_resolver_udp_channel *resolver, struct aws_dns_query_result *response) {
+static struct aws_dns_query_internal *s_find_matching_query(
+    struct aws_dns_resolver_udp_channel *resolver,
+    struct aws_dns_query_result *response) {
     if (aws_array_list_length(&response->question_records) != 1) {
         return NULL;
     }
@@ -142,7 +144,7 @@ static int s_process_read_message(
     AWS_LOGF_TRACE(AWS_LS_IO_DNS, "Received datagram of length %d on DNS channel", (int)message->message_data.len);
 
     struct aws_dns_resolver_udp_channel *resolver = handler->impl;
-    int result = AWS_OP_ERR;
+
     struct aws_dns_query_result response;
     AWS_ZERO_STRUCT(response);
 
@@ -152,13 +154,19 @@ static int s_process_read_message(
 
     struct aws_dns_query_internal *source_query = s_find_matching_query(resolver, &response);
     if (source_query != NULL) {
-        AWS_LOGF_INFO(AWS_LS_IO_DNS, "Received response with transaction id %d, invoking query callback", (int)response.transaction_id);
+        AWS_LOGF_INFO(
+            AWS_LS_IO_DNS,
+            "Received response with transaction id %d, invoking query callback",
+            (int)response.transaction_id);
         source_query->on_completed_callback(&response, AWS_ERROR_SUCCESS, source_query->user_data);
         source_query->state = AWS_DNS_QS_COMPLETE;
         s_unlink_query(source_query);
         aws_dns_query_internal_destroy(source_query);
     } else {
-        AWS_LOGF_INFO(AWS_LS_IO_DNS, "Received response with transaction id %d but no matching query could be found", (int)response.transaction_id);
+        AWS_LOGF_INFO(
+            AWS_LS_IO_DNS,
+            "Received response with transaction id %d but no matching query could be found",
+            (int)response.transaction_id);
     }
 
 done:
@@ -167,7 +175,7 @@ done:
 
     aws_mem_release(message->allocator, message);
 
-    return result;
+    return AWS_OP_SUCCESS;
 }
 
 static int s_shutdown(
@@ -456,15 +464,16 @@ static int s_connect(struct aws_dns_resolver_udp_channel *resolver) {
 
 static int s_encode_dns_fixed_header(struct aws_dns_query_internal *query, struct aws_byte_buf *data) {
     /*
-     * Should cryptographically unpredictable, but for now, just a counter
+     * Should be cryptographically unpredictable, but for now, just a counter
      */
     uint16_t transaction_id = query->channel->next_transaction_id++;
+    query->transaction_id = transaction_id;
     if (!aws_byte_buf_write_be16(data, transaction_id)) {
         return AWS_OP_ERR;
     }
 
     /* all flags 0 except recursion desired */
-    uint16_t flags = (1U << 8 );
+    uint16_t flags = (1U << 8);
     if (!aws_byte_buf_write_be16(data, flags)) {
         return AWS_OP_ERR;
     }
@@ -616,7 +625,7 @@ static void s_send_query(struct aws_dns_query_internal *query) {
     const size_t required_length = fixed_header_length + question_length + extension_length;
 
     struct aws_io_message *message = aws_channel_acquire_message_from_pool(
-            query->channel->slot->channel, AWS_IO_MESSAGE_APPLICATION_DATA, required_length);
+        query->channel->slot->channel, AWS_IO_MESSAGE_APPLICATION_DATA, required_length);
     if (message == NULL) {
         return;
     }
@@ -916,7 +925,6 @@ static void s_aws_dns_query_result_clean_up_resource_record_list(struct aws_arra
     aws_array_list_clean_up(records);
 }
 
-
 void aws_dns_query_result_clean_up(struct aws_dns_query_result *result) {
     if (result == NULL) {
         return;
@@ -927,4 +935,3 @@ void aws_dns_query_result_clean_up(struct aws_dns_query_result *result) {
     s_aws_dns_query_result_clean_up_resource_record_list(&result->authority_records);
     s_aws_dns_query_result_clean_up_resource_record_list(&result->additional_records);
 }
-

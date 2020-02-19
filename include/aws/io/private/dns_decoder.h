@@ -23,7 +23,10 @@ AWS_EXTERN_C_BEGIN
 
 /* non-streaming since we're only doing UDP atm */
 AWS_IO_API
-int aws_dns_decode_response(struct aws_dns_query_result *result, struct aws_allocator *allocator, struct aws_byte_cursor response_packet_cursor);
+int aws_dns_decode_response(
+    struct aws_dns_query_result *result,
+    struct aws_allocator *allocator,
+    struct aws_byte_cursor response_packet_cursor);
 
 AWS_EXTERN_C_END
 
