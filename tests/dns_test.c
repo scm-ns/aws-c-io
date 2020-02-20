@@ -47,6 +47,8 @@ struct aws_dns_resolver_udp_test {
 static struct aws_dns_resolver_udp_test s_test;
 
 static void s_client_bootstrap_shutdown_complete_fn(void *user_data) {
+    (void)user_data;
+
     aws_mutex_lock(&s_test.lock);
     s_test.bootstrap_shutdown = true;
     aws_mutex_unlock(&s_test.lock);
@@ -93,6 +95,9 @@ static void s_on_resolver_initial_connection(void *user_data) {
 }
 
 static void s_on_query_complete(struct aws_dns_query_result *result, int error_code, void *user_data) {
+    (void)result;
+    (void)user_data;
+    
     aws_mutex_lock(&s_test.lock);
     s_test.query_complete = true;
     s_test.query_error_code = error_code;

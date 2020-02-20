@@ -27,6 +27,11 @@
 
 #include <inttypes.h>
 
+#if defined(_MSC_VER)
+#pragma warning(disable : 4204)
+#endif
+
+
 #define ELASTIDIG_VERSION "0.0.1"
 
 struct aws_dns_resource_record_type_name {
