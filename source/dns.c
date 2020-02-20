@@ -27,6 +27,11 @@
 #define DEFAULT_RETRY_INTERVAL_MS 4000
 #define DEFAULT_TIMEOUT_INTERVAL_MS 5000
 
+#if defined(_MSC_VER)
+#pragma warning(disable : 4204)
+#pragma warning(disable : 4221)
+#endif
+
 static void s_unlink_query(struct aws_dns_query_internal *query) {
     if (query->state == AWS_DNS_QS_INITIALIZED) {
         aws_mutex_lock(&query->channel->lock);
