@@ -14,7 +14,7 @@
  */
 
 #include <aws/io/private/dns_decoder.h>
-#include <aws/io/private/dns_impl.h>
+#include <aws/io/dns_impl.h>
 
 #include <aws/common/clock.h>
 #include <aws/common/logging.h>

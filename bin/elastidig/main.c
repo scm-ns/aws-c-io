@@ -22,7 +22,7 @@
 #include <aws/io/channel_bootstrap.h>
 #include <aws/io/event_loop.h>
 #include <aws/io/logging.h>
-#include <aws/io/private/dns_impl.h>
+#include <aws/io/dns_impl.h>
 #include <aws/io/socket.h>
 
 #include <inttypes.h>

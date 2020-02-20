@@ -21,7 +21,7 @@
 #include <aws/io/channel_bootstrap.h>
 #include <aws/io/event_loop.h>
 #include <aws/io/io.h>
-#include <aws/io/private/dns_impl.h>
+#include <aws/io/dns_impl.h>
 
 struct aws_dns_resolver_udp_test {
     struct aws_allocator *allocator;
