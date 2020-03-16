@@ -31,10 +31,10 @@
 static size_t s_message_pool_key = 0; /* Address of variable serves as key in hash table */
 
 enum {
-    KB_16 = 16 * 1024,
+    KB_256 = 256 * 1024,
 };
 
-size_t g_aws_channel_max_fragment_size = KB_16;
+size_t g_aws_channel_max_fragment_size = KB_256;
 
 #define INITIAL_STATISTIC_LIST_SIZE 5
 
