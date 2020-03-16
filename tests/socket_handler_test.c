@@ -61,6 +61,7 @@ static struct socket_common_tester c_tester;
 
 static int s_socket_common_tester_init(struct aws_allocator *allocator, struct socket_common_tester *tester) {
     AWS_ZERO_STRUCT(*tester);
+    aws_io_library_init(allocator);
     ASSERT_SUCCESS(aws_event_loop_group_default_init(&tester->el_group, allocator, 0));
     struct aws_mutex mutex = AWS_MUTEX_INIT;
     struct aws_condition_variable condition_variable = AWS_CONDITION_VARIABLE_INIT;
@@ -68,8 +69,6 @@ static int s_socket_common_tester_init(struct aws_allocator *allocator, struct s
     tester->condition_variable = condition_variable;
     aws_atomic_store_int(&tester->current_time_ns, 0);
     aws_atomic_store_ptr(&tester->stats_handler, NULL);
-
-    aws_io_library_init(allocator);
 
     return AWS_OP_SUCCESS;
 }
@@ -287,7 +286,8 @@ static int s_local_server_tester_init(
     struct aws_allocator *allocator,
     struct local_server_tester *tester,
     struct socket_test_args *args,
-    struct socket_common_tester *s_c_tester) {
+    struct socket_common_tester *s_c_tester,
+    bool enable_back_pressure) {
     AWS_ZERO_STRUCT(*tester);
     tester->socket_options.connect_timeout_ms = 3000;
     tester->socket_options.type = AWS_SOCKET_STREAM;
@@ -301,14 +301,19 @@ static int s_local_server_tester_init(
         (long long unsigned)tester->timestamp);
     tester->server_bootstrap = aws_server_bootstrap_new(allocator, &s_c_tester->el_group);
     ASSERT_NOT_NULL(tester->server_bootstrap);
-    tester->listener = aws_server_bootstrap_new_socket_listener(
-        tester->server_bootstrap,
-        &tester->endpoint,
-        &tester->socket_options,
-        s_socket_handler_test_server_setup_callback,
-        s_socket_handler_test_server_shutdown_callback,
-        s_socket_handler_test_server_listener_destroy_callback,
-        args);
+
+    struct aws_server_socket_channel_bootstrap_options bootstrap_options = {
+        .bootstrap = tester->server_bootstrap,
+        .enable_read_back_pressure = enable_back_pressure,
+        .port = tester->endpoint.port,
+        .host_name = tester->endpoint.address,
+        .socket_options = &tester->socket_options,
+        .incoming_callback = s_socket_handler_test_server_setup_callback,
+        .shutdown_callback = s_socket_handler_test_server_shutdown_callback,
+        .destroy_callback = s_socket_handler_test_server_listener_destroy_callback,
+        .user_data = args,
+    };
+    tester->listener = aws_server_bootstrap_new_socket_listener(&bootstrap_options);
     ASSERT_NOT_NULL(tester->listener);
 
     return AWS_OP_SUCCESS;
@@ -371,7 +376,7 @@ static int s_socket_echo_and_backpressure_test(struct aws_allocator *allocator, 
     ASSERT_SUCCESS(s_socket_test_args_init(&outgoing_args, &c_tester, outgoing_rw_handler));
 
     struct local_server_tester local_server_tester;
-    ASSERT_SUCCESS(s_local_server_tester_init(allocator, &local_server_tester, &incoming_args, &c_tester));
+    ASSERT_SUCCESS(s_local_server_tester_init(allocator, &local_server_tester, &incoming_args, &c_tester, true));
 
     /* this should never get used for this case. */
     struct aws_host_resolver dummy_resolver;
@@ -392,6 +397,7 @@ static int s_socket_echo_and_backpressure_test(struct aws_allocator *allocator, 
     channel_options.setup_callback = s_socket_handler_test_client_setup_callback;
     channel_options.shutdown_callback = s_socket_handler_test_client_shutdown_callback;
     channel_options.user_data = &outgoing_args;
+    channel_options.enable_read_back_pressure = true;
 
     ASSERT_SUCCESS(aws_mutex_lock(&c_tester.mutex));
     ASSERT_SUCCESS(aws_client_bootstrap_new_socket_channel(&channel_options));
@@ -497,7 +503,7 @@ static int s_socket_close_test(struct aws_allocator *allocator, void *ctx) {
     ASSERT_SUCCESS(s_socket_test_args_init(&outgoing_args, &c_tester, outgoing_rw_handler));
 
     struct local_server_tester local_server_tester;
-    ASSERT_SUCCESS(s_local_server_tester_init(allocator, &local_server_tester, &incoming_args, &c_tester));
+    ASSERT_SUCCESS(s_local_server_tester_init(allocator, &local_server_tester, &incoming_args, &c_tester, false));
 
     /* this should not get used for a unix domain socket. */
     struct aws_host_resolver dummy_resolver;
@@ -653,7 +659,7 @@ static int s_open_channel_statistics_test(struct aws_allocator *allocator, void 
     ASSERT_SUCCESS(s_socket_test_args_init(&outgoing_args, &c_tester, outgoing_rw_handler));
 
     struct local_server_tester local_server_tester;
-    ASSERT_SUCCESS(s_local_server_tester_init(allocator, &local_server_tester, &incoming_args, &c_tester));
+    ASSERT_SUCCESS(s_local_server_tester_init(allocator, &local_server_tester, &incoming_args, &c_tester, false));
 
     /* this should not get used for a unix domain socket. */
     struct aws_host_resolver dummy_resolver;
