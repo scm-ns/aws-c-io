@@ -575,7 +575,7 @@ static void s_main_loop(void *args) {
         timeout,
         MAX_EVENTS);
 
-    uin64_t prev_loop_time = 0;
+    uint64_t prev_loop_time = 0;
     event_loop->clock(&prev_loop_time);
 
     /*
@@ -591,12 +591,12 @@ static void s_main_loop(void *args) {
      */
     while (epoll_loop->should_continue) {
 
-        uin64_t start_loop_time = 0;
+        uint64_t start_loop_time = 0;
         event_loop->clock(&start_loop_time);
         size_t elapsed_time = start_loop_time - prev_loop_time;
-        aws_atomic_exchange_int(&event_loop->tick_elapsed_time, &elapsed_time);
+        aws_atomic_exchange_int(&event_loop->tick_elapsed_time, elapsed_time);
         prev_loop_time = start_loop_time;
-
+    
         AWS_LOGF_TRACE(AWS_LS_IO_EVENT_LOOP, "id=%p: waiting for a maximum of %d ms", (void *)event_loop, timeout);
         int event_count = epoll_wait(epoll_loop->epoll_fd, events, MAX_EVENTS, timeout);
 
@@ -636,7 +636,7 @@ static void s_main_loop(void *args) {
             }
         }
 
-        uin64_t start_task_time = 0;
+        uint64_t start_task_time = 0;
         event_loop->clock(&start_task_time);
 
         /* run scheduled tasks */
@@ -651,7 +651,7 @@ static void s_main_loop(void *args) {
         uint64_t end_task_time = 0;
         event_loop->clock(&end_task_time);
         size_t task_elapsed_time = (size_t)(end_task_time - start_task_time);
-        aws_atomic_exchange_int(&event_loop->task_elapsed_time, &task_elapsed_time);
+        aws_atomic_exchange_int(&event_loop->task_elapsed_time, task_elapsed_time);
 
 
         /* set timeout for next epoll_wait() call.
