@@ -94,6 +94,12 @@ struct aws_event_loop {
     struct aws_allocator *alloc;
     aws_io_clock_fn *clock;
     struct aws_hash_table local_data;
+
+    // TODO this doesn't necessarily make sense here, just hacking it in for now.
+    struct aws_atomic_var num_io_subscriptions;
+    struct aws_atomic_var tick_elapsed_time;
+    struct aws_atomic_var task_elapsed_time;
+
     void *impl_data;
 };
 

@@ -192,6 +192,10 @@ struct aws_event_loop *aws_event_loop_new_default(struct aws_allocator *alloc, a
 
     epoll_loop->should_continue = false;
 
+    aws_atomic_init_int(&loop->num_io_subscriptions, 0);
+    aws_atomic_init_int(&loop->tick_elapsed_time, 0);
+    aws_atomic_init_int(&loop->task_elapsed_time, 0);
+
     loop->impl_data = epoll_loop;
     loop->vtable = &s_vtable;
 
@@ -424,6 +428,8 @@ static int s_subscribe_to_io_events(
         return aws_raise_error(AWS_ERROR_SYS_CALL_FAILURE);
     }
 
+    aws_atomic_fetch_add(&event_loop->num_io_subscriptions, 1);
+
     return AWS_OP_SUCCESS;
 }
 
@@ -470,6 +476,9 @@ static int s_unsubscribe_from_io_events(struct aws_event_loop *event_loop, struc
     s_schedule_task_now(event_loop, &additional_handle_data->cleanup_task);
 
     handle->additional_data = NULL;
+
+    aws_atomic_fetch_sub(&event_loop->num_io_subscriptions, 1);
+
     return AWS_OP_SUCCESS;
 }
 
@@ -566,6 +575,9 @@ static void s_main_loop(void *args) {
         timeout,
         MAX_EVENTS);
 
+    uin64_t prev_loop_time = 0;
+    event_loop->clock(&prev_loop_time);
+
     /*
      * until stop is called,
      * call epoll_wait, if a task is scheduled, or a file descriptor has activity, it will
@@ -578,6 +590,13 @@ static void s_main_loop(void *args) {
      * process queued subscription cleanups.
      */
     while (epoll_loop->should_continue) {
+
+        uin64_t start_loop_time = 0;
+        event_loop->clock(&start_loop_time);
+        size_t elapsed_time = start_loop_time - prev_loop_time;
+        aws_atomic_exchange_int(&event_loop->tick_elapsed_time, &elapsed_time);
+        prev_loop_time = start_loop_time;
+
         AWS_LOGF_TRACE(AWS_LS_IO_EVENT_LOOP, "id=%p: waiting for a maximum of %d ms", (void *)event_loop, timeout);
         int event_count = epoll_wait(epoll_loop->epoll_fd, events, MAX_EVENTS, timeout);
 
@@ -617,6 +636,9 @@ static void s_main_loop(void *args) {
             }
         }
 
+        uin64_t start_task_time = 0;
+        event_loop->clock(&start_task_time);
+
         /* run scheduled tasks */
         s_process_task_pre_queue(event_loop);
 
@@ -625,6 +647,12 @@ static void s_main_loop(void *args) {
                                        will not be run. That's ok, we'll handle them next time around. */
         AWS_LOGF_TRACE(AWS_LS_IO_EVENT_LOOP, "id=%p: running scheduled tasks.", (void *)event_loop);
         aws_task_scheduler_run_all(&epoll_loop->scheduler, now_ns);
+
+        uint64_t end_task_time = 0;
+        event_loop->clock(&end_task_time);
+        size_t task_elapsed_time = (size_t)(end_task_time - start_task_time);
+        aws_atomic_exchange_int(&event_loop->task_elapsed_time, &task_elapsed_time);
+
 
         /* set timeout for next epoll_wait() call.
          * if clock fails, or scheduler has no tasks, use default timeout */
