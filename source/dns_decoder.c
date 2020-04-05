@@ -282,18 +282,168 @@ int aws_dns_decode_response(
     return AWS_OP_SUCCESS;
 }
 
+enum aws_dns_decoder_response_state {
+    AWS_DDS_RESPONSE_INVALID,
+
+    AWS_DDS_RESPONSE_BEGIN,          // 0
+    AWS_DDS_RESPONSE_TRANSACTION_ID, // 2
+    AWS_DDS_RESPONSE_HEADER_FLAGS,   // 2
+    AWS_DDS_RESPONSE_RECORD_COUNTS,  // 8
+
+    AWS_DDS_RESPONSE_QUESTION_RECORDS,   // 0*
+    AWS_DDS_RESPONSE_ANSWER_RECORDS,     // 0*
+    AWS_DDS_RESPONSE_AUTHORITY_RECORDS,  // 0*
+    AWS_DDS_RESPONSE_ADDITIONAL_RECORDS, // 0*
+
+    AWS_DDS_RESPONSE_END,     // 0
+    AWS_DDS_RESPONSE_FAILURE, // 0
+};
+
+enum aws_dns_decoder_record_state {
+    AWS_DDS_RECORD_INVALID,
+
+    AWS_DDS_RECORD_BEGIN, // 0
+
+    AWS_DDS_RECORD_NAME,  // 1+
+    AWS_DDS_RECORD_TYPE,  // 2
+    AWS_DDS_RECORD_CLASS, // 2
+
+    AWS_DDS_RECORD_TTL,       // 4
+    AWS_DDS_RECORD_DATA_BLOB, // 2+
+    AWS_DDS_RECORD_DATA_NAME, // 2+
+
+    AWS_DDS_RECORD_END
+};
+
+struct aws_dns_decoding_state {
+    enum aws_dns_decoder_response_state response_state;
+    enum aws_dns_decoder_record_state record_state;
+};
+
+static size_t s_get_required_bytes_to_process_record_state(enum aws_dns_decoder_record_state record_state) {
+    switch (record_state) {
+        case AWS_DDS_RECORD_BEGIN:
+        case AWS_DDS_RECORD_END:
+            return 0;
+
+        case AWS_DDS_RECORD_NAME:
+            return 1;
+
+        case AWS_DDS_RECORD_TYPE:
+        case AWS_DDS_RECORD_CLASS:
+        case AWS_DDS_RECORD_DATA_BLOB:
+        case AWS_DDS_RECORD_DATA_NAME:
+            return 2;
+
+        case AWS_DDS_RECORD_TTL:
+            return 4;
+
+        default:
+            return 0;
+    }
+}
+
+static size_t s_get_required_bytes_to_process_state(struct aws_dns_decoding_state *state) {
+    switch (state->response_state) {
+        case AWS_DDS_RESPONSE_BEGIN:
+        case AWS_DDS_RESPONSE_END:
+        case AWS_DDS_RESPONSE_FAILURE:
+            return 0;
+
+        case AWS_DDS_RESPONSE_TRANSACTION_ID:
+        case AWS_DDS_RESPONSE_HEADER_FLAGS:
+            return 2;
+
+        case AWS_DDS_RESPONSE_RECORD_COUNTS:
+            return 8;
+
+        case AWS_DDS_RESPONSE_QUESTION_RECORDS:
+        case AWS_DDS_RESPONSE_ANSWER_RECORDS:
+        case AWS_DDS_RESPONSE_AUTHORITY_RECORDS:
+        case AWS_DDS_RESPONSE_ADDITIONAL_RECORDS:
+            return s_get_required_bytes_to_process_record_state(state->record_state);
+
+        default:
+            return 0;
+    }
+}
+
+#define MAXIMUM_RESPONSE_SIZE 4096
+
 struct aws_dns_decoder_standard {
     struct aws_dns_decoder base;
 
-    struct aws_byte_buf current_response;
+    struct aws_dns_query_result current_response;
+    struct aws_byte_buf current_response_buffer;
+
+    struct aws_dns_decoding_state state;
 };
 
 static void s_aws_dns_decoder_destroy_standard(struct aws_dns_decoder *decoder) {
     struct aws_dns_decoder_standard *standard_decoder = decoder->impl;
 
-    aws_byte_buf_clean_up(&standard_decoder->current_response);
+    aws_byte_buf_clean_up(&standard_decoder->current_response_buffer);
+    aws_dns_query_result_clean_up(&standard_decoder->current_response);
 
     aws_mem_release(decoder->allocator, standard_decoder);
+}
+
+static bool s_are_states_equal(struct aws_dns_decoding_state *lhs, struct aws_dns_decoding_state *rhs) {
+    return lhs->response_state == rhs->response_state && lhs->record_state == rhs->record_state;
+}
+
+static void s_reset_response(struct aws_dns_decoder_standard *decoder) {
+    aws_byte_buf_reset(&decoder->current_response_buffer, false);
+    aws_dns_query_result_clean_up(&decoder->current_response);
+    AWS_ZERO_STRUCT(decoder->current_response);
+}
+
+static int s_advance_and_copy_fragment(
+    struct aws_dns_decoder_standard *decoder,
+    struct aws_byte_cursor *fragment,
+    size_t amount) {
+    AWS_FATAL_ASSERT(fragment->len >= amount);
+
+    struct aws_byte_cursor copy_fragment = *fragment;
+    copy_fragment.len = amount;
+
+    if (aws_byte_buf_append_dynamic(&decoder->current_response_buffer, &copy_fragment)) {
+        return AWS_OP_ERR;
+    }
+
+    aws_byte_cursor_advance(fragment, amount);
+
+    return AWS_OP_SUCCESS;
+}
+
+static int s_decode_by_state(struct aws_dns_decoder_standard *decoder, struct aws_byte_cursor *fragment) {
+    (void)decoder;
+    (void)fragment;
+
+    return AWS_OP_ERR;
+}
+
+static int s_aws_dns_decoder_decode_standard2(struct aws_dns_decoder *decoder, struct aws_byte_cursor response_data) {
+    int result = AWS_OP_SUCCESS;
+
+    struct aws_dns_decoder_standard *standard_decoder = decoder->impl;
+    struct aws_byte_cursor response_fragment = response_data;
+
+    struct aws_dns_decoding_state previous_state = {
+        .response_state = AWS_DDS_RESPONSE_INVALID,
+        .record_state = AWS_DDS_RECORD_INVALID,
+    };
+
+    while ((response_fragment.len > 0 || !s_are_states_equal(&previous_state, &standard_decoder->state))) {
+        previous_state = standard_decoder->state;
+
+        if (s_decode_by_state(standard_decoder, &response_fragment)) {
+            result = AWS_OP_ERR;
+            break;
+        }
+    }
+
+    return result;
 }
 
 static int s_aws_dns_decoder_decode_standard(struct aws_dns_decoder *decoder, struct aws_byte_cursor response_data) {
@@ -338,9 +488,12 @@ struct aws_dns_decoder *aws_dns_decoder_new_standard(
     decoder->base.vtable = &s_standard_decoder_vtable;
     decoder->base.options = *options;
 
-    if (aws_byte_buf_init(&decoder->current_response, allocator, INITIAL_RESPONSE_BUFFER_SIZE)) {
+    if (aws_byte_buf_init(&decoder->current_response_buffer, allocator, INITIAL_RESPONSE_BUFFER_SIZE)) {
         goto on_error;
     }
+
+    decoder->state.response_state = AWS_DDS_RESPONSE_BEGIN;
+    decoder->state.record_state = AWS_DDS_RECORD_BEGIN;
 
     return &decoder->base;
 
