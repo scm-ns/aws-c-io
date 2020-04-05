@@ -281,3 +281,84 @@ int aws_dns_decode_response(
 
     return AWS_OP_SUCCESS;
 }
+
+struct aws_dns_decoder_standard {
+    struct aws_dns_decoder base;
+
+    struct aws_byte_buf current_response;
+};
+
+static void s_aws_dns_decoder_destroy_standard(struct aws_dns_decoder *decoder) {
+    struct aws_dns_decoder_standard *standard_decoder = decoder->impl;
+
+    aws_byte_buf_clean_up(&standard_decoder->current_response);
+
+    aws_mem_release(decoder->allocator, standard_decoder);
+}
+
+static int s_aws_dns_decoder_decode_standard(struct aws_dns_decoder *decoder, struct aws_byte_cursor response_data) {
+    struct aws_dns_query_result response;
+    AWS_ZERO_STRUCT(response);
+
+    int result = AWS_OP_ERR;
+
+    if (aws_dns_decode_response(&response, decoder->allocator, response_data)) {
+        goto done;
+    }
+
+    result = AWS_OP_SUCCESS;
+
+    decoder->options.on_response_callback(
+        &response, AWS_ERROR_SUCCESS, decoder->options.on_response_callback_user_data);
+
+done:
+
+    aws_dns_query_result_clean_up(&response);
+
+    return result;
+}
+
+static struct aws_dns_decoder_vtable s_standard_decoder_vtable = {
+    .decode = s_aws_dns_decoder_decode_standard,
+    .destroy = s_aws_dns_decoder_destroy_standard,
+};
+
+#define INITIAL_RESPONSE_BUFFER_SIZE 512
+
+struct aws_dns_decoder *aws_dns_decoder_new_standard(
+    struct aws_allocator *allocator,
+    struct aws_dns_decoder_options *options) {
+    struct aws_dns_decoder_standard *decoder = aws_mem_calloc(allocator, 1, sizeof(struct aws_dns_decoder_standard));
+    if (decoder == NULL) {
+        return NULL;
+    }
+
+    decoder->base.allocator = allocator;
+    decoder->base.impl = decoder;
+    decoder->base.vtable = &s_standard_decoder_vtable;
+    decoder->base.options = *options;
+
+    if (aws_byte_buf_init(&decoder->current_response, allocator, INITIAL_RESPONSE_BUFFER_SIZE)) {
+        goto on_error;
+    }
+
+    return &decoder->base;
+
+on_error:
+
+    aws_dns_decoder_destroy(&decoder->base);
+
+    return NULL;
+}
+
+void aws_dns_decoder_destroy(struct aws_dns_decoder *decoder) {
+    if (decoder != NULL) {
+        decoder->vtable->destroy(decoder);
+    }
+}
+
+int aws_dns_decoder_decode(struct aws_dns_decoder *decoder, struct aws_byte_cursor response_data) {
+    AWS_FATAL_ASSERT(decoder != NULL);
+
+    return decoder->vtable->decode(decoder, response_data);
+}

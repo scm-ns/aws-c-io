@@ -24,6 +24,7 @@
 
 struct aws_string;
 struct aws_channel_bootstrap;
+struct aws_dns_decoder;
 
 enum aws_dns_query_state {
     AWS_DNS_QS_INITIALIZED,
@@ -112,6 +113,8 @@ struct aws_dns_resolver_udp_channel {
     uint16_t next_transaction_id;
     struct aws_linked_list outstanding_queries;
     struct aws_linked_list pending_queries;
+
+    struct aws_dns_decoder *decoder;
 
     /* shared, protected state */
     struct aws_mutex lock;

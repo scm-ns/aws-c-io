@@ -97,6 +97,8 @@ static void s_aws_dns_resolver_impl_udp_destroy_finalize(struct aws_dns_resolver
 
     aws_string_destroy(resolver->host);
 
+    aws_dns_decoder_destroy(resolver->decoder);
+
     if (resolver->on_destroyed_callback) {
         (resolver->on_destroyed_callback)(resolver->on_destroyed_user_data);
     }
@@ -146,33 +148,8 @@ static int s_process_read_message(
 
     struct aws_dns_resolver_udp_channel *resolver = handler->impl;
 
-    struct aws_dns_query_result response;
-    AWS_ZERO_STRUCT(response);
-
-    if (aws_dns_decode_response(&response, resolver->allocator, aws_byte_cursor_from_buf(&message->message_data))) {
-        goto done;
-    }
-
-    struct aws_dns_query_internal *source_query = s_find_matching_query(resolver, &response);
-    if (source_query != NULL) {
-        AWS_LOGF_INFO(
-            AWS_LS_IO_DNS,
-            "Received response with transaction id %d, invoking query callback",
-            (int)response.transaction_id);
-        source_query->on_completed_callback(&response, AWS_ERROR_SUCCESS, source_query->user_data);
-        source_query->state = AWS_DNS_QS_COMPLETE;
-        s_unlink_query(source_query);
-        aws_dns_query_internal_destroy(source_query);
-    } else {
-        AWS_LOGF_INFO(
-            AWS_LS_IO_DNS,
-            "Received response with transaction id %d but no matching query could be found",
-            (int)response.transaction_id);
-    }
-
-done:
-
-    aws_dns_query_result_clean_up(&response);
+    /* decode errors in the UDP resolver are ignored */
+    aws_dns_decoder_decode(resolver->decoder, aws_byte_cursor_from_buf(&message->message_data));
 
     aws_mem_release(message->allocator, message);
 
@@ -680,6 +657,35 @@ static void s_dns_resolver_driver(struct aws_channel_task *task, void *arg, enum
     s_schedule_channel_driver_if_needed(resolver);
 }
 
+static void s_decoder_on_response_callback(struct aws_dns_query_result *response, int error_code, void *user_data) {
+    struct aws_dns_resolver_udp_channel *resolver = user_data;
+
+    if (response != NULL) {
+        struct aws_dns_query_internal *source_query = s_find_matching_query(resolver, response);
+        if (source_query != NULL) {
+            AWS_LOGF_INFO(
+                AWS_LS_IO_DNS,
+                "Received response with transaction id %d, invoking query callback",
+                (int)response->transaction_id);
+            source_query->on_completed_callback(response, AWS_ERROR_SUCCESS, source_query->user_data);
+            s_unlink_query(source_query);
+            source_query->state = AWS_DNS_QS_COMPLETE;
+            aws_dns_query_internal_destroy(source_query);
+        } else {
+            AWS_LOGF_ERROR(
+                AWS_LS_IO_DNS,
+                "Received response with transaction id %d but no matching query could be found",
+                (int)response->transaction_id);
+        }
+    } else {
+        AWS_LOGF_ERROR(
+            AWS_LS_IO_DNS,
+            "Error %d(%s) while handling DNS query response",
+            error_code,
+            aws_error_debug_str(error_code));
+    }
+}
+
 struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(
     struct aws_allocator *allocator,
     struct aws_dns_resolver_udp_channel_options *options) {
@@ -705,6 +711,16 @@ struct aws_dns_resolver_udp_channel *aws_dns_resolver_udp_channel_new(
     }
 
     if (aws_mutex_init(&resolver->lock)) {
+        goto on_error;
+    }
+
+    struct aws_dns_decoder_options decoder_options = {
+        .on_response_callback = s_decoder_on_response_callback,
+        .on_response_callback_user_data = resolver,
+    };
+
+    resolver->decoder = aws_dns_decoder_new_standard(allocator, &decoder_options);
+    if (resolver->decoder == NULL) {
         goto on_error;
     }
 
