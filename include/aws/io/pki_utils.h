@@ -118,8 +118,8 @@ AWS_IO_API int aws_import_key_pair_to_cert_context(
     struct aws_allocator *alloc,
     const struct aws_byte_cursor *public_cert_chain,
     const struct aws_byte_cursor *private_key,
-    HCERTSTORE *cert_store,
-    PCCERT_CONTEXT *certs);
+    HCERTSTORE *store_out,
+    PCCERT_CONTEXT *certs_out);
 #endif /* _WIN32 */
 
 AWS_EXTERN_C_END

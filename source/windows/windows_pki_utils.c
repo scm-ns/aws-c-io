@@ -210,42 +210,51 @@ int aws_import_key_pair_to_cert_context(
     struct aws_allocator *alloc,
     const struct aws_byte_cursor *public_cert_chain,
     const struct aws_byte_cursor *private_key,
-    HCERTSTORE *store,
-    PCCERT_CONTEXT *certs) {
+    HCERTSTORE *store_out,
+    PCCERT_CONTEXT *certs_out) {
 
+    int result = AWS_OP_ERR;
     struct aws_array_list certificates, private_keys;
-    *certs = NULL;
-    *store = NULL;
+    PCCERT_CONTEXT certs = 0;
+    *certs_out = NULL;
+    HCERTSTORE store = 0;
+    *store_out = NULL;
+    BYTE *key = NULL;
+    HCRYPTPROV crypto_prov = 0;
+    HCRYPTKEY h_key = 0;
+    BOOL success = false;
+
+    AWS_ZERO_STRUCT(certificates);
+    AWS_ZERO_STRUCT(private_keys);
+
     if (aws_array_list_init_dynamic(&certificates, alloc, 2, sizeof(struct aws_byte_buf))) {
         return AWS_OP_ERR;
     }
 
-    if (aws_decode_pem_to_buffer_list(alloc, public_cert_chain, &certificates)) {
-        aws_array_list_clean_up(&certificates);
-        return AWS_OP_ERR;
+    if (aws_array_list_init_dynamic(&private_keys, alloc, 1, sizeof(struct aws_byte_buf))) {
+        goto clean_up;
     }
 
-    if (aws_array_list_init_dynamic(&private_keys, alloc, 1, sizeof(struct aws_byte_buf))) {
-        return AWS_OP_ERR;
+    if (aws_decode_pem_to_buffer_list(alloc, public_cert_chain, &certificates)) {
+        goto clean_up;
     }
 
     if (aws_decode_pem_to_buffer_list(alloc, private_key, &private_keys)) {
-        aws_array_list_clean_up(&private_keys);
-        return AWS_OP_ERR;
+        goto clean_up;
     }
 
-    int error_code = AWS_OP_SUCCESS;
     size_t cert_count = aws_array_list_length(&certificates);
     AWS_LOGF_INFO(AWS_LS_IO_PKI, "static: loading certificate chain with %d certificates.", (int)cert_count);
-    *store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, (ULONG_PTR)NULL, CERT_STORE_CREATE_NEW_FLAG, NULL);
 
-    if (!*store) {
+    store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, (ULONG_PTR)NULL, CERT_STORE_CREATE_NEW_FLAG, NULL);
+    if (!store) {
         AWS_LOGF_ERROR(AWS_LS_IO_PKI, "static: failed to load in-memory/ephemeral certificate store.");
-        return aws_raise_error(AWS_ERROR_SYS_CALL_FAILURE);
+        aws_raise_error(AWS_ERROR_SYS_CALL_FAILURE);
+        goto clean_up;
     }
 
-    CERT_CONTEXT *cert_context = NULL;
     for (size_t i = 0; i < cert_count; ++i) {
+        CERT_CONTEXT *cert_context = NULL;
         struct aws_byte_buf *byte_buf_ptr = NULL;
         aws_array_list_get_at_ptr(&certificates, (void **)&byte_buf_ptr, i);
 
@@ -270,24 +279,35 @@ int aws_import_key_pair_to_cert_context(
 
         if (!query_res) {
             AWS_LOGF_ERROR(AWS_LS_IO_PKI, "static: invalid certificate blob.");
-            error_code = aws_raise_error(AWS_IO_FILE_VALIDATION_FAILURE);
+            aws_raise_error(AWS_IO_FILE_VALIDATION_FAILURE);
             goto clean_up;
         }
 
-        CertAddCertificateContextToStore(*store, cert_context, CERT_STORE_ADD_ALWAYS, NULL);
+		success = CertAddCertificateContextToStore(store, cert_context, CERT_STORE_ADD_ALWAYS, NULL);
+        int last_error = (int)GetLastError();
 
-        if (i != cert_count - 1) {
-            CertFreeCertificateContext(cert_context);
-        } else {
-            *certs = cert_context;
+		if (cert_context) {
+            if (i != cert_count - 1) {
+                CertFreeCertificateContext(cert_context);
+            } else {
+                certs = cert_context;
+            }
         }
+
+		if (!success) {
+            AWS_LOGF_ERROR(
+                AWS_LS_IO_PKI,
+                "static: error adding certificate context to cert store, errno %d",
+                last_error);
+            goto clean_up;
+		}
     }
 
-    struct aws_uuid uuid;
+	AWS_FATAL_ASSERT(certs != 0);
 
+    struct aws_uuid uuid;
     if (aws_uuid_init(&uuid)) {
         AWS_LOGF_ERROR(AWS_LS_IO_PKI, "static: failed to load a uuid. This should never happen.");
-        error_code = AWS_OP_ERR;
         goto clean_up;
     }
 
@@ -300,22 +320,18 @@ int aws_import_key_pair_to_cert_context(
     mbstowcs_s(&converted_chars, uuid_wstr, AWS_UUID_STR_LEN, uuid_str, sizeof(uuid_str));
     (void)converted_chars;
 
-    HCRYPTPROV crypto_prov = 0;
-    BOOL success = CryptAcquireContextW(&crypto_prov, uuid_wstr, NULL, PROV_RSA_FULL, CRYPT_NEWKEYSET);
-
+    success = CryptAcquireContextW(&crypto_prov, uuid_wstr, NULL, PROV_RSA_FULL, CRYPT_NEWKEYSET);
     if (!success) {
         AWS_LOGF_ERROR(
             AWS_LS_IO_PKI,
             "static: error creating a new crypto context for key %s with errno %d",
             uuid_str,
             (int)GetLastError());
-        error_code = AWS_OP_ERR;
         goto clean_up;
     }
 
     struct aws_byte_buf *private_key_ptr = NULL;
     aws_array_list_get_at_ptr(&private_keys, (void **)&private_key_ptr, 0);
-    BYTE *key = NULL;
 
     DWORD decoded_len = 0;
     success = CryptDecodeObjectEx(
@@ -327,10 +343,21 @@ int aws_import_key_pair_to_cert_context(
         0,
         &key,
         &decoded_len);
-    HCRYPTKEY h_key = 0;
+    if (!success) {
+        int last_error = (int)GetLastError();
+        AWS_LOGF_ERROR(
+            AWS_LS_IO_PKI,
+            "static: error decoding private key %s, errno %d", 
+			uuid_str,
+            last_error);
+        goto clean_up;
+	}
+
     success = CryptImportKey(crypto_prov, key, decoded_len, 0, 0, &h_key);
-    LocalFree(key);
-    CryptDestroyKey(h_key);
+    if (!success) {
+        AWS_LOGF_ERROR(AWS_LS_IO_PKI, "static: error importing private key %s, errno %d", uuid_str, (int)GetLastError());
+        goto clean_up;
+	}
 
     CRYPT_KEY_PROV_INFO key_prov_info;
     AWS_ZERO_STRUCT(key_prov_info);
@@ -338,34 +365,47 @@ int aws_import_key_pair_to_cert_context(
     key_prov_info.dwProvType = PROV_RSA_FULL;
     key_prov_info.dwKeySpec = AT_KEYEXCHANGE;
 
-    success = CertSetCertificateContextProperty(*certs, CERT_KEY_PROV_INFO_PROP_ID, 0, &key_prov_info);
-    CryptReleaseContext(crypto_prov, 0);
-
+    success = CertSetCertificateContextProperty(certs, CERT_KEY_PROV_INFO_PROP_ID, 0, &key_prov_info);
     if (!success) {
         AWS_LOGF_ERROR(
             AWS_LS_IO_PKI,
             "static: error creating a new certificate context for key %s with errno %d",
             uuid_str,
             (int)GetLastError());
-        error_code = AWS_OP_ERR;
         goto clean_up;
     }
 
+	*store_out = store;
+    *certs_out = certs;
+    result = AWS_OP_SUCCESS;
+
 clean_up:
+    if (key) {
+        LocalFree(key);
+    }
+
+    if (h_key) {
+        CryptDestroyKey(h_key);
+    }
+
+	if (crypto_prov) {
+        CryptReleaseContext(crypto_prov, 0);
+	}
+
     aws_cert_chain_clean_up(&certificates);
     aws_array_list_clean_up(&certificates);
     aws_cert_chain_clean_up(&private_keys);
     aws_array_list_clean_up(&private_keys);
 
-    if (error_code && *store != NULL) {
-        aws_close_cert_store(*store);
-        *store = NULL;
-    }
+	if (result == AWS_OP_ERR) {
+        if (store != NULL) {
+            aws_close_cert_store(store);
+		}
 
-    if (error_code && *certs) {
-        CertFreeCertificateContext(*certs);
-        *certs = NULL;
-    }
+		if (certs != NULL) {
+            CertFreeCertificateContext(certs);
+        }
+	}
 
-    return error_code;
+    return result;
 }
