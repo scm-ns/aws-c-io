@@ -272,7 +272,8 @@ static void s_on_host_entry_shutdown_completion(void *user_data) {
 static inline void process_records(
     struct aws_allocator *allocator,
     struct aws_cache *records,
-    struct aws_cache *failed_records) {
+    struct aws_cache *failed_records,
+    struct aws_host_resolution_config *resolution_config) {
     uint64_t timestamp = 0;
     aws_sys_clock_get_ticks(&timestamp);
 
@@ -291,6 +292,11 @@ static inline void process_records(
                 lru_element->address->bytes,
                 lru_element->host->bytes);
             expired_records++;
+
+            if (resolution_config->address_expired_callback) {
+                resolution_config->address_expired_callback(lru_element, resolution_config->impl_data);
+            }
+
             aws_cache_remove(records, lru_element->address);
         }
     }
@@ -523,6 +529,12 @@ static void s_update_address_cache(
 
                 aws_cache_put(address_table, address_to_cache->address, address_to_cache);
 
+                struct aws_host_resolution_config *resolution_config = &host_entry->resolution_config;
+
+                if (resolution_config->resolved_address_callback) {
+                    resolution_config->resolved_address_callback(address_to_cache, resolution_config->impl_data);
+                }
+
                 AWS_LOGF_DEBUG(
                     AWS_LS_IO_DNS,
                     "static: new address resolved %s for host %s caching",
@@ -634,8 +646,16 @@ static void resolver_thread_fn(void *arg) {
          * process and clean_up records in the entry. occasionally, failed connect records will be upgraded
          * for retry.
          */
-        process_records(host_entry->allocator, host_entry->aaaa_records, host_entry->failed_connection_aaaa_records);
-        process_records(host_entry->allocator, host_entry->a_records, host_entry->failed_connection_a_records);
+        process_records(
+            host_entry->allocator,
+            host_entry->aaaa_records,
+            host_entry->failed_connection_aaaa_records,
+            &host_entry->resolution_config);
+        process_records(
+            host_entry->allocator,
+            host_entry->a_records,
+            host_entry->failed_connection_a_records,
+            &host_entry->resolution_config);
 
         aws_linked_list_swap_contents(&pending_resolve_copy, &host_entry->pending_resolution_callbacks);
 

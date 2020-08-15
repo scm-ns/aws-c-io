@@ -66,8 +66,25 @@ typedef int(aws_resolve_host_implementation_fn)(
     struct aws_array_list *output_addresses,
     void *user_data);
 
+/**
+ * Function signature for a callback used for listening for when an address has been resolved.
+ */
+typedef void(aws_host_resolver_resolved_address_fn)(struct aws_host_address *host_address, void *user_data);
+
+/**
+ * Function signature for a callback used for listening for when an address has expired.
+ */
+typedef void(aws_host_resolver_address_expired_fn)(struct aws_host_address *host_address, void *user_data);
+
 struct aws_host_resolution_config {
     aws_resolve_host_implementation_fn *impl;
+
+    /* Optional callback */
+    aws_host_resolver_resolved_address_fn *resolved_address_callback;
+
+    /* Optional callback */
+    aws_host_resolver_address_expired_fn *address_expired_callback;
+
     size_t max_ttl;
     void *impl_data;
 };
