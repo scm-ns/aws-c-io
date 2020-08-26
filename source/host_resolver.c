@@ -952,6 +952,9 @@ static int default_resolve_host(
     }
 
     aws_mutex_lock(&host_entry->entry_lock);
+    host_entry->resolution_config.impl_data = config->impl_data;
+    host_entry->resolution_config.resolved_address_callback = config->resolved_address_callback;
+    host_entry->resolution_config.address_expired_callback = config->address_expired_callback;
 
     /*
      * We don't need to make any resolver side-affects in the remaining logic and it's impossible for the entry
